@@ -1,0 +1,6 @@
+{
+  "name": "MidiLens",
+  "description": "Cross-platform JUCE C++ MIDI FX plugin (AU, VST3, CLAP) for Logic Pro and major DAWs with real-time auditioning, scale lock, quantize, humanise, Krumhansl-Schmuckler key detection, interactive piano roll, and drag-and-drop export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
