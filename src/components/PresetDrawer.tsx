@@ -324,6 +324,11 @@ export const PresetDrawer: React.FC<PresetDrawerProps> = ({
                     <span className="px-2 py-0.5 rounded-md bg-slate-800/80 text-sky-300 border border-slate-700/60 font-bold">
                       {rootName} {scaleName}
                     </span>
+                    {preset.sequence && (
+                      <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-bold">
+                        {preset.sequence.bpm} BPM Groove
+                      </span>
+                    )}
                     <span className="px-2 py-0.5 rounded-md bg-slate-800/80 text-amber-300 border border-slate-700/60 font-bold">
                       Grid: {preset.settings.quantizeGrid}
                     </span>

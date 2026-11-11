@@ -14,6 +14,10 @@ export type ScaleType =
 
 export type QuantizeGrid = '1/4' | '1/8' | '1/16' | '1/32' | '1/8T' | '1/16T';
 
+export type ArpMode = 'up' | 'down' | 'up-down' | 'down-up' | 'random' | 'chord';
+export type ArpRate = '1/4' | '1/8' | '1/16' | '1/32' | '1/8T' | '1/16T';
+export type ArpOctaves = 1 | 2 | 3 | 4;
+
 export interface MidiNote {
   id: number;
   pitch: number; // 0-127
@@ -57,6 +61,12 @@ export interface PluginParameters {
   scaleType: ScaleType;
   scaleLock: boolean; // Gray out non-scale notes & prevent dragging onto them
   quantizeGrid: QuantizeGrid;
+  // Arpeggiator Parameters
+  arpEnabled: boolean;
+  arpMode: ArpMode;
+  arpRate: ArpRate;
+  arpOctaves: ArpOctaves;
+  arpGate: number; // 0.1 - 1.0 (default 0.75)
 }
 
 export interface ScannedMidiFile {

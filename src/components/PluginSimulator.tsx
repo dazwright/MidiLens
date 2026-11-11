@@ -21,6 +21,10 @@ import {
 import { synthAudioEngine } from '../audioEngine';
 import { PianoRoll } from './PianoRoll';
 import { PresetDrawer } from './PresetDrawer';
+import { ChordVisualizer } from './ChordVisualizer';
+import { ArpeggiatorControls } from './ArpeggiatorControls';
+import { MidiExportModal } from './MidiExportModal';
+import { arpeggiateNotes } from '../arpUtils';
 import {
   Play,
   Pause,
@@ -48,6 +52,14 @@ import {
   ChevronDown,
   Undo2,
   Redo2,
+  Loader2,
+  AlertCircle,
+  StopCircle,
+  Dices,
+  Minus,
+  Plus,
+  CheckSquare,
+  Activity,
 } from 'lucide-react';
 
 interface HistorySnapshot {
@@ -84,17 +96,40 @@ export const PluginSimulator: React.FC = () => {
     scaleType: FACTORY_PRESETS[0].settings.scaleType,
     scaleLock: FACTORY_PRESETS[0].settings.scaleLock,
     quantizeGrid: FACTORY_PRESETS[0].settings.quantizeGrid,
+    arpEnabled: false,
+    arpMode: 'up',
+    arpRate: '1/16',
+    arpOctaves: 1,
+    arpGate: 0.75,
   });
 
   const [selectedNoteIds, setSelectedNoteIds] = useState<Set<number>>(new Set());
+  const [activePitches, setActivePitches] = useState<number[]>([]);
+
+  // Panel & Modal visibility toggles
+  const [showChordVisualizer, setShowChordVisualizer] = useState(true);
+  const [showArpPanel, setShowArpPanel] = useState(true);
+  const [showExportModal, setShowExportModal] = useState(false);
 
   const [keyResult, setKeyResult] = useState<KeyResult>(() => analyzeKeyFromNotes(PRESET_SEQUENCES[0].notes));
   const [isDraggingFile, setIsDraggingFile] = useState(false);
 
-  // Folder scanning state
+  // Folder scanning state (non-blocking chunked scan & streaming progress)
   const [scannedFiles, setScannedFiles] = useState<ScannedMidiFile[]>([]);
   const [showFolderModal, setShowFolderModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState({ scanned: 0, total: 0, found: 0 });
+  const [currentScanningFolder, setCurrentScanningFolder] = useState('');
+  const [visibleLibraryCount, setVisibleLibraryCount] = useState(50);
+  const isCancelledRef = useRef(false);
+  const currentDiscoveredRef = useRef<ScannedMidiFile[]>([]);
+
+  // Active Source Selection (preset pattern, scanned folder file, or uploaded single file)
+  const [activeSourceType, setActiveSourceType] = useState<'preset' | 'scanned' | 'custom'>('preset');
+  const [currentScannedFileIdx, setCurrentScannedFileIdx] = useState<number>(-1);
+  const [isWaitingFolderAuth, setIsWaitingFolderAuth] = useState(false);
+  const [notificationBanner, setNotificationBanner] = useState<string | null>(null);
 
   // Humanize panel state
   const [showHumanizeModal, setShowHumanizeModal] = useState(false);
@@ -194,7 +229,15 @@ export const PluginSimulator: React.FC = () => {
     setHumanizeVelRange(s.humanizeVelRange);
     setRandomMinVel(s.randomMinVel);
     setRandomMaxVel(s.randomMaxVel);
-  }, []);
+
+    // If preset contains an associated musical sequence, load it directly
+    if (preset.sequence) {
+      pushHistorySnapshot(`Load Preset Groove (${preset.name})`);
+      synthAudioEngine.stop();
+      setPlayheadPpq(0);
+      setSequence(preset.sequence);
+    }
+  }, [pushHistorySnapshot]);
 
   // Current Settings Payload for Saving New Preset
   const getCurrentSettingsPayload = (): PresetSettings => ({
@@ -229,13 +272,38 @@ export const PluginSimulator: React.FC = () => {
     synthAudioEngine.setOnStateChange((playing) => {
       setIsPlaying(playing);
     });
+    synthAudioEngine.setOnActivePitches((pitches) => {
+      setActivePitches(pitches);
+    });
   }, []);
 
-  // Recalculate Key Detection whenever sequence notes change
+  // Apply current arpeggiator settings directly to sequence notes
+  const handleApplyArpToSequence = useCallback(() => {
+    pushHistorySnapshot(`Apply Arp (${params.arpMode.toUpperCase()} ${params.arpRate})`);
+    const arped = arpeggiateNotes(sequence.notes, sequence.totalLengthPpq, {
+      mode: params.arpMode,
+      rate: params.arpRate,
+      octaves: params.arpOctaves,
+      gate: params.arpGate,
+    });
+    setSequence((s) => ({ ...s, notes: arped }));
+  }, [sequence.notes, sequence.totalLengthPpq, params.arpMode, params.arpRate, params.arpOctaves, params.arpGate]);
+
+  // Recalculate Key Detection whenever sequence notes change and auto-sync SCALE box
   useEffect(() => {
     const res = analyzeKeyFromNotes(sequence.notes);
     setKeyResult(res);
-  }, [sequence.notes]);
+    if (res.confidence > 0.05 && sequence.notes.length > 0) {
+      setParams((prev) => ({
+        ...prev,
+        scaleRoot: res.rootPitch,
+        scaleType: res.isMinor ? 'minor' : 'major',
+        targetKeyRoot: res.rootPitch,
+        targetKeyIsMinor: res.isMinor,
+        targetScaleType: res.isMinor ? 'minor' : 'major',
+      }));
+    }
+  }, [sequence.name, sequence.notes]);
 
   // Transport Controls
   const togglePlay = () => {
@@ -255,6 +323,53 @@ export const PluginSimulator: React.FC = () => {
     synthAudioEngine.seek(ppq);
     setPlayheadPpq(ppq);
   };
+
+  // Manual Tempo Handling (active when syncMode === 'audition')
+  const [tempoInputValue, setTempoInputValue] = useState(String(sequence.bpm));
+  const [isTapActive, setIsTapActive] = useState(false);
+  const tapTimesRef = useRef<number[]>([]);
+  const tapTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    setTempoInputValue(String(sequence.bpm));
+  }, [sequence.bpm]);
+
+  const handleTempoChange = useCallback((newBpm: number) => {
+    const clamped = Math.round(Math.min(320, Math.max(20, newBpm)));
+    if (!isNaN(clamped)) {
+      setSequence((prev) => ({
+        ...prev,
+        bpm: clamped,
+      }));
+      setTempoInputValue(String(clamped));
+      synthAudioEngine.setTempo(clamped);
+    }
+  }, []);
+
+  const handleTapTempo = useCallback(() => {
+    setIsTapActive(true);
+    if (tapTimeoutRef.current) {
+      window.clearTimeout(tapTimeoutRef.current);
+    }
+    tapTimeoutRef.current = window.setTimeout(() => setIsTapActive(false), 150);
+
+    const now = performance.now();
+    const taps = tapTimesRef.current.filter((t) => now - t < 3000);
+    taps.push(now);
+    tapTimesRef.current = taps;
+
+    if (taps.length >= 2) {
+      const intervals: number[] = [];
+      for (let i = 1; i < taps.length; i++) {
+        intervals.push(taps[i] - taps[i - 1]);
+      }
+      const avgIntervalMs = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+      if (avgIntervalMs > 0) {
+        const calculatedBpm = Math.round(60000 / avgIntervalMs);
+        handleTempoChange(calculatedBpm);
+      }
+    }
+  }, [handleTempoChange]);
 
   // Sync To Project Key (sets active scale & computes transposition matching project key)
   const syncToProjectKey = () => {
@@ -350,49 +465,416 @@ export const PluginSimulator: React.FC = () => {
     setSequence((s) => ({ ...s, notes: updated }));
   };
 
+  // Select All Notes Toggle
+  const handleToggleSelectAllNotes = useCallback(() => {
+    if (selectedNoteIds.size === sequence.notes.length && sequence.notes.length > 0) {
+      setSelectedNoteIds(new Set());
+    } else {
+      setSelectedNoteIds(new Set(sequence.notes.map((n) => n.id)));
+    }
+  }, [selectedNoteIds, sequence.notes]);
+
+  // Selected notes velocity calculations
+  const selectedNotes = sequence.notes.filter((n) => selectedNoteIds.has(n.id));
+  const hasSelectedNotes = selectedNotes.length > 0;
+  const avgVelocity = hasSelectedNotes
+    ? selectedNotes.reduce((acc, n) => acc + n.velocity, 0) / selectedNotes.length
+    : 0.75;
+  const avgMidiVelocity = Math.round(avgVelocity * 127);
+  const linePercent = Math.min(100, Math.max(0, avgVelocity * 100));
+
+  // Apply new average velocity with proportionate scaling to all selected notes
+  const applyVelocityToSelectedNotes = useCallback(
+    (targetAvgVel: number, recordHistory = false) => {
+      if (selectedNotes.length === 0) return;
+      const clampedAvg = Math.min(1.0, Math.max(0.01, targetAvgVel));
+
+      if (recordHistory) {
+        pushHistorySnapshot(`Adjust Velocity (${Math.round(clampedAvg * 127)})`);
+      }
+
+      if (selectedNotes.length === 1) {
+        const targetId = selectedNotes[0].id;
+        setSequence((s) => ({
+          ...s,
+          notes: s.notes.map((n) => (n.id === targetId ? { ...n, velocity: clampedAvg } : n)),
+        }));
+      } else {
+        const currentAvg =
+          selectedNotes.reduce((acc, n) => acc + n.velocity, 0) / selectedNotes.length;
+        const ratio = currentAvg > 0.001 ? clampedAvg / currentAvg : 1.0;
+
+        setSequence((s) => ({
+          ...s,
+          notes: s.notes.map((n) => {
+            if (selectedNoteIds.has(n.id)) {
+              const scaled = Math.min(1.0, Math.max(0.05, n.velocity * ratio));
+              return { ...n, velocity: scaled };
+            }
+            return n;
+          }),
+        }));
+      }
+    },
+    [selectedNotes, selectedNoteIds]
+  );
+
+  const heatmapBarRef = useRef<HTMLDivElement>(null);
+
+  const handleVelocityMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const barEl = heatmapBarRef.current;
+    if (!barEl) return;
+
+    let currentSelectedNotes = sequence.notes.filter((n) => selectedNoteIds.has(n.id));
+    if (currentSelectedNotes.length === 0) {
+      // Auto-select all notes if none selected so drag immediately works
+      const allIds = new Set(sequence.notes.map((n) => n.id));
+      setSelectedNoteIds(allIds);
+      currentSelectedNotes = [...sequence.notes];
+    }
+    if (currentSelectedNotes.length === 0) return;
+
+    const rect = barEl.getBoundingClientRect();
+    const startX = e.clientX;
+    const startY = e.clientY;
+
+    const initialAvg =
+      currentSelectedNotes.reduce((acc, n) => acc + n.velocity, 0) / currentSelectedNotes.length;
+    const initialVelMap = new Map<number, number>();
+    currentSelectedNotes.forEach((n) => initialVelMap.set(n.id, n.velocity));
+
+    const clickRatio = Math.min(1.0, Math.max(0.01, (startX - rect.left) / rect.width));
+    let lastAvg = clickRatio;
+
+    if (currentSelectedNotes.length === 1) {
+      const targetId = currentSelectedNotes[0].id;
+      setSequence((s) => ({
+        ...s,
+        notes: s.notes.map((n) => (n.id === targetId ? { ...n, velocity: clickRatio } : n)),
+      }));
+    } else {
+      const ratio = initialAvg > 0.001 ? clickRatio / initialAvg : 1.0;
+      setSequence((s) => ({
+        ...s,
+        notes: s.notes.map((n) => {
+          if (initialVelMap.has(n.id)) {
+            const initV = initialVelMap.get(n.id)!;
+            return { ...n, velocity: Math.min(1.0, Math.max(0.05, initV * ratio)) };
+          }
+          return n;
+        }),
+      }));
+    }
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const deltaX = moveEvent.clientX - startX;
+      const deltaY = startY - moveEvent.clientY; // Upwards is positive
+
+      let targetAvg: number;
+      if (Math.abs(deltaY) > Math.abs(deltaX) * 1.25) {
+        targetAvg = Math.min(1.0, Math.max(0.01, clickRatio + deltaY / 120));
+      } else {
+        targetAvg = Math.min(1.0, Math.max(0.01, (moveEvent.clientX - rect.left) / rect.width));
+      }
+      lastAvg = targetAvg;
+
+      if (currentSelectedNotes.length === 1) {
+        const targetId = currentSelectedNotes[0].id;
+        setSequence((s) => ({
+          ...s,
+          notes: s.notes.map((n) => (n.id === targetId ? { ...n, velocity: targetAvg } : n)),
+        }));
+      } else {
+        const ratio = initialAvg > 0.001 ? targetAvg / initialAvg : 1.0;
+        setSequence((s) => ({
+          ...s,
+          notes: s.notes.map((n) => {
+            if (initialVelMap.has(n.id)) {
+              const initV = initialVelMap.get(n.id)!;
+              return { ...n, velocity: Math.min(1.0, Math.max(0.05, initV * ratio)) };
+            }
+            return n;
+          }),
+        }));
+      }
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      pushHistorySnapshot(`Adjust Velocity (${Math.round(lastAvg * 127)})`);
+      if (currentSelectedNotes.length > 0) {
+        synthAudioEngine.auditionNote(currentSelectedNotes[0].pitch, lastAvg, 0.25);
+      }
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  };
+
   // MIDI Pattern Selection Navigation
   const currentSequenceIdx = PRESET_SEQUENCES.findIndex((s) => s.name === sequence.name);
 
   const handleSelectSequence = (idx: number) => {
-    pushHistorySnapshot(`Load Groove (${PRESET_SEQUENCES[idx]?.name || 'Preset'})`);
     const safeIdx = (idx + PRESET_SEQUENCES.length) % PRESET_SEQUENCES.length;
+    const newSeq = PRESET_SEQUENCES[safeIdx];
+    setActiveSourceType('preset');
+    setCurrentScannedFileIdx(-1);
+    pushHistorySnapshot(`Load Groove (${newSeq?.name || 'Preset'})`);
     synthAudioEngine.stop();
     setPlayheadPpq(0);
-    setSequence(PRESET_SEQUENCES[safeIdx]);
-  };
+    setSelectedNoteIds(new Set());
+    setSequence(newSeq);
 
-  // Single File Upload
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      pushHistorySnapshot(`Open File (${file.name})`);
-      loadMidiFromFile(file);
+    // Sync active preset and target scale parameters to this groove if matched
+    const matchingPreset = FACTORY_PRESETS.find((p) => p.sequence?.name === newSeq.name);
+    if (matchingPreset) {
+      setActiveLensPreset(matchingPreset);
+      setParams((prev) => ({
+        ...prev,
+        scaleRoot: matchingPreset.settings.scaleRoot,
+        scaleType: matchingPreset.settings.scaleType,
+        quantizeGrid: matchingPreset.settings.quantizeGrid,
+      }));
     }
   };
 
-  // Folder Scanning
-  const handleFolderScan = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+  // Handle file or preset selection from the top dropdown
+  const handleItemSelect = (val: string) => {
+    if (val.startsWith('scanned_')) {
+      const idx = Number(val.replace('scanned_', ''));
+      const item = scannedFiles[idx];
+      if (item) {
+        setCurrentScannedFileIdx(idx);
+        setActiveSourceType('scanned');
+        pushHistorySnapshot(`Load Scanned MIDI (${item.name})`);
+        loadMidiFromFile(item.file);
+      }
+    } else if (val.startsWith('preset_')) {
+      const idx = Number(val.replace('preset_', ''));
+      handleSelectSequence(idx);
+    }
+  };
 
-    const discovered: ScannedMidiFile[] = [];
+  // Step backwards / forwards across active source items (scanned files or presets)
+  const handleStepItem = (direction: -1 | 1) => {
+    if (activeSourceType === 'scanned' && scannedFiles.length > 0) {
+      const nextIdx = (currentScannedFileIdx + direction + scannedFiles.length) % scannedFiles.length;
+      setCurrentScannedFileIdx(nextIdx);
+      const item = scannedFiles[nextIdx];
+      pushHistorySnapshot(`Load Scanned MIDI (${item.name})`);
+      loadMidiFromFile(item.file);
+    } else {
+      const safeIdx = (currentSequenceIdx + direction + PRESET_SEQUENCES.length) % PRESET_SEQUENCES.length;
+      handleSelectSequence(safeIdx);
+    }
+  };
 
-    for (let i = 0; i < files.length; i++) {
-      const f = files[i];
-      const lower = f.name.toLowerCase();
-      if (lower.endsWith('.mid') || lower.endsWith('.midi')) {
-        const relativePath = (f as unknown as { webkitRelativePath?: string }).webkitRelativePath || f.name;
-        discovered.push({
-          name: f.name,
-          relativePath,
-          file: f,
-          sizeBytes: f.size,
-        });
+  // Pick random file primarily from scanned library (Dice button)
+  const handleRandomPick = () => {
+    if (scannedFiles.length > 0) {
+      let randIdx = Math.floor(Math.random() * scannedFiles.length);
+      if (scannedFiles.length > 1 && randIdx === currentScannedFileIdx) {
+        randIdx = (randIdx + 1 + Math.floor(Math.random() * (scannedFiles.length - 1))) % scannedFiles.length;
+      }
+      const chosen = scannedFiles[randIdx];
+      setCurrentScannedFileIdx(randIdx);
+      setActiveSourceType('scanned');
+      pushHistorySnapshot(`Random Library Pick (${chosen.name})`);
+      loadMidiFromFile(chosen.file);
+      setNotificationBanner(`🎲 Library Random: "${chosen.name}" (${(randIdx + 1).toLocaleString()} of ${scannedFiles.length.toLocaleString()} files)`);
+      setTimeout(() => setNotificationBanner(null), 4000);
+    } else {
+      // Library is empty: prompt user to scan their folder and open folder picker directly
+      setNotificationBanner("📁 Your MIDI library is empty. Please select a folder to build your library!");
+      handleScanFolderClick();
+    }
+  };
+
+  // Single or Multi File Upload from the "Open" button
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+
+    if (fileList.length === 1) {
+      const file = fileList[0];
+      setActiveSourceType('custom');
+      setCurrentScannedFileIdx(-1);
+      pushHistorySnapshot(`Open File (${file.name})`);
+      loadMidiFromFile(file);
+      setNotificationBanner(`✓ Loaded "${file.name}" into piano roll.`);
+      setTimeout(() => setNotificationBanner(null), 4000);
+    } else {
+      // Multiple files selected at once: add them all to the library and open the library modal
+      const discovered: ScannedMidiFile[] = [];
+      for (let i = 0; i < fileList.length; i++) {
+        const f = fileList[i];
+        const lower = f.name.toLowerCase();
+        if (lower.endsWith('.mid') || lower.endsWith('.midi')) {
+          discovered.push({
+            name: f.name,
+            relativePath: (f as unknown as { webkitRelativePath?: string }).webkitRelativePath || f.name,
+            file: f,
+            sizeBytes: f.size,
+          });
+        }
+      }
+
+      if (discovered.length > 0) {
+        setScannedFiles(discovered);
+        setCurrentScannedFileIdx(0);
+        setActiveSourceType('scanned');
+        pushHistorySnapshot(`Open Multiple Files (Loaded ${discovered[0].name})`);
+        loadMidiFromFile(discovered[0].file);
+        setNotificationBanner(`✓ Added ${discovered.length} MIDI files to library. Loaded "${discovered[0].name}" into piano roll.`);
+        setTimeout(() => setNotificationBanner(null), 5000);
       }
     }
 
+    // Always reset the input so reopening the same file or selecting files again works immediately
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  // Cancel folder scanning immediately
+  const cancelScan = () => {
+    isCancelledRef.current = true;
+    setIsScanning(false);
+    setIsWaitingFolderAuth(false);
+    setNotificationBanner(null);
+    if (folderInputRef.current) {
+      folderInputRef.current.value = '';
+    }
+  };
+
+  // Stop scanning and immediately show all discovered files
+  const stopAndShowResults = () => {
+    isCancelledRef.current = true;
+    setIsScanning(false);
+    setIsWaitingFolderAuth(false);
+    const discovered = [...currentDiscoveredRef.current];
     setScannedFiles(discovered);
-    setShowFolderModal(true);
+    setVisibleLibraryCount(50);
+    if (discovered.length > 0) {
+      setCurrentScannedFileIdx(0);
+      setActiveSourceType('scanned');
+      pushHistorySnapshot(`Stopped Scan (Loaded ${discovered[0].name})`);
+      loadMidiFromFile(discovered[0].file);
+      setNotificationBanner(`✓ Stopped scan: Discovered ${discovered.length} MIDI files. Loaded "${discovered[0].name}" into piano roll.`);
+      setTimeout(() => setNotificationBanner(null), 5000);
+    }
+    if (folderInputRef.current) {
+      folderInputRef.current.value = '';
+    }
+  };
+
+  // Direct, synchronous trigger of folder selection dialog - never lost or blocked by browser security
+  const handleScanFolderClick = () => {
+    isCancelledRef.current = false;
+    currentDiscoveredRef.current = [];
+    setScanProgress({ scanned: 0, total: 0, found: 0 });
+    setCurrentScanningFolder('');
+    setIsWaitingFolderAuth(true);
+    setNotificationBanner("📁 Folder chooser opened. When prompted by your browser, confirm 'Upload' or 'Allow' to scan files locally in your browser.");
+
+    const onWindowFocus = () => {
+      setTimeout(() => {
+        setIsWaitingFolderAuth(false);
+        window.removeEventListener('focus', onWindowFocus);
+      }, 2500);
+    };
+    window.addEventListener('focus', onWindowFocus, { once: true });
+
+    if (folderInputRef.current) {
+      folderInputRef.current.value = '';
+      folderInputRef.current.click();
+    }
+  };
+
+  // Process folder files via non-blocking asynchronous chunking
+  const handleFolderScan = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setIsWaitingFolderAuth(false);
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) {
+      setIsScanning(false);
+      setNotificationBanner(null);
+      return;
+    }
+
+    const totalFiles = fileList.length;
+    setIsScanning(true);
+    isCancelledRef.current = false;
+    const discovered: ScannedMidiFile[] = [];
+    currentDiscoveredRef.current = discovered;
+    setScanProgress({ scanned: 0, total: totalFiles, found: 0 });
+    setNotificationBanner(`Scanning ${totalFiles.toLocaleString()} files for MIDI...`);
+
+    const CHUNK_SIZE = 400; // Rapid chunking for ultra-fast scanning across huge folders (30k+ files)
+    let idx = 0;
+
+    const processNextChunk = () => {
+      if (isCancelledRef.current) {
+        setIsScanning(false);
+        setNotificationBanner(null);
+        return;
+      }
+
+      const end = Math.min(idx + CHUNK_SIZE, totalFiles);
+      for (let i = idx; i < end; i++) {
+        const f = fileList[i];
+        const lower = f.name.toLowerCase();
+        if (lower.endsWith('.mid') || lower.endsWith('.midi')) {
+          const relativePath = (f as unknown as { webkitRelativePath?: string }).webkitRelativePath || f.name;
+          discovered.push({
+            name: f.name,
+            relativePath,
+            file: f,
+            sizeBytes: f.size,
+          });
+        }
+      }
+
+      idx = end;
+      if (fileList[idx - 1]) {
+        const lastPath = (fileList[idx - 1] as unknown as { webkitRelativePath?: string }).webkitRelativePath || fileList[idx - 1].name;
+        const dirName = lastPath.split('/').slice(0, -1).join('/') || 'Folder';
+        setCurrentScanningFolder(dirName);
+      }
+
+      setScanProgress({ scanned: idx, total: totalFiles, found: discovered.length });
+
+      if (idx < totalFiles) {
+        // Yield to event loop to keep UI 100% interactive and non-blocking
+        setTimeout(processNextChunk, 0);
+      } else {
+        // Complete
+        setScannedFiles([...discovered]);
+        setIsScanning(false);
+        setVisibleLibraryCount(50);
+
+        if (discovered.length > 0) {
+          // Immediately load the 1st discovered MIDI file into the piano roll!
+          setCurrentScannedFileIdx(0);
+          setActiveSourceType('scanned');
+          pushHistorySnapshot(`Scan Folder (Loaded ${discovered[0].name})`);
+          loadMidiFromFile(discovered[0].file);
+          setNotificationBanner(`✓ Scanned ${totalFiles.toLocaleString()} files: Discovered ${discovered.length.toLocaleString()} MIDI files. Loaded "${discovered[0].name}".`);
+          setTimeout(() => setNotificationBanner(null), 6000);
+        } else {
+          setNotificationBanner(`Scanned ${totalFiles.toLocaleString()} files: No .mid or .midi files found in the selected folder.`);
+          setTimeout(() => setNotificationBanner(null), 6000);
+        }
+
+        if (folderInputRef.current) {
+          folderInputRef.current.value = '';
+        }
+      }
+    };
+
+    // Begin chunked processing on next tick
+    setTimeout(processNextChunk, 10);
   };
 
   const loadMidiFromFile = (file: File) => {
@@ -403,7 +885,12 @@ export const PluginSimulator: React.FC = () => {
         const parsed = parseMidiFile(buffer, file.name);
         synthAudioEngine.stop();
         setPlayheadPpq(0);
+        setSelectedNoteIds(new Set());
         setSequence(parsed);
+        if (parsed.notes.length === 0) {
+          setNotificationBanner(`Warning: "${file.name}" was loaded but contains no MIDI note events.`);
+          setTimeout(() => setNotificationBanner(null), 5000);
+        }
       } catch (err) {
         alert('Could not parse MIDI file: ' + (err as Error).message);
       }
@@ -411,7 +898,7 @@ export const PluginSimulator: React.FC = () => {
     reader.readAsArrayBuffer(file);
   };
 
-  // Drag and Drop from OS
+  // Drag and Drop from OS (Supports both .mid files and entire folders)
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDraggingFile(true);
@@ -421,13 +908,108 @@ export const PluginSimulator: React.FC = () => {
     setIsDraggingFile(false);
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDraggingFile(false);
+
+    // Check if a directory was dropped via webkitGetAsEntry
+    const items = e.dataTransfer.items;
+    let hasDirectory = false;
+    if (items && items.length > 0) {
+      for (let i = 0; i < items.length; i++) {
+        const entry = items[i].webkitGetAsEntry?.();
+        if (entry && entry.isDirectory) {
+          hasDirectory = true;
+          break;
+        }
+      }
+    }
+
+    if (hasDirectory) {
+      setIsScanning(true);
+      isCancelledRef.current = false;
+      const discovered: ScannedMidiFile[] = [];
+      currentDiscoveredRef.current = discovered;
+      let count = 0;
+
+      async function readEntry(entry: any, currentPath = '') {
+        if (isCancelledRef.current) return;
+        if (entry.isFile) {
+          count++;
+          if (count % 25 === 0) {
+            setScanProgress({ scanned: count, total: 0, found: discovered.length });
+            await new Promise((r) => setTimeout(r, 0));
+          }
+          const lower = entry.name.toLowerCase();
+          if (lower.endsWith('.mid') || lower.endsWith('.midi')) {
+            await new Promise<void>((resolve) => {
+              entry.file(
+                (file: File) => {
+                  discovered.push({
+                    name: entry.name,
+                    relativePath: currentPath ? `${currentPath}/${entry.name}` : entry.name,
+                    file,
+                    sizeBytes: file.size,
+                  });
+                  setScanProgress({ scanned: count, total: 0, found: discovered.length });
+                  resolve();
+                },
+                () => resolve()
+              );
+            });
+          }
+        } else if (entry.isDirectory) {
+          setCurrentScanningFolder(entry.name);
+          const reader = entry.createReader();
+          const readAll = async () => {
+            const batch: any[] = await new Promise((res) => reader.readEntries(res, () => res([])));
+            if (batch.length > 0 && !isCancelledRef.current) {
+              for (const child of batch) {
+                const sub = currentPath ? `${currentPath}/${entry.name}` : entry.name;
+                await readEntry(child, sub);
+              }
+              await readAll();
+            }
+          };
+          await readAll();
+        }
+      }
+
+      for (let i = 0; i < items.length; i++) {
+        const entry = items[i].webkitGetAsEntry?.();
+        if (entry) {
+          await readEntry(entry, '');
+        }
+      }
+
+      if (!isCancelledRef.current) {
+        setScannedFiles([...discovered]);
+        setIsScanning(false);
+        setVisibleLibraryCount(50);
+        if (discovered.length > 0) {
+          setCurrentScannedFileIdx(0);
+          setActiveSourceType('scanned');
+          pushHistorySnapshot(`Drop Folder (Loaded ${discovered[0].name})`);
+          loadMidiFromFile(discovered[0].file);
+          setNotificationBanner(`✓ Dropped folder: Discovered ${discovered.length} MIDI files. Loaded "${discovered[0].name}".`);
+          setTimeout(() => setNotificationBanner(null), 5000);
+        } else {
+          setNotificationBanner('No .mid or .midi files were found in the dropped folder.');
+          setTimeout(() => setNotificationBanner(null), 5000);
+        }
+      }
+      return;
+    }
+
+    // Single MIDI file drop
     const file = e.dataTransfer.files?.[0];
-    if (file && (file.name.endsWith('.mid') || file.name.endsWith('.midi'))) {
+    if (file && (file.name.toLowerCase().endsWith('.mid') || file.name.toLowerCase().endsWith('.midi'))) {
+      setActiveSourceType('custom');
+      setCurrentScannedFileIdx(-1);
       pushHistorySnapshot(`Drop File (${file.name})`);
       loadMidiFromFile(file);
+      setNotificationBanner(`✓ Loaded "${file.name}" into piano roll.`);
+      setTimeout(() => setNotificationBanner(null), 4000);
     }
   };
 
@@ -478,123 +1060,232 @@ export const PluginSimulator: React.FC = () => {
         </div>
       )}
 
-      {/* Scaler 3 / Riffer Style Modern Top Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 bg-[#1b1e2a] border-b border-slate-800/80">
-        {/* Left: Brand Pill, Preset Manager Drawer, MIDI Pattern Selector */}
+      {/* Top Line 1: Brand, Active File, and Random Dice Button */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-2.5 bg-[#141722] border-b border-slate-800/80">
         <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2 px-3 py-1 bg-gradient-to-r from-sky-500/20 to-blue-600/20 border border-sky-500/30 rounded-full">
+          {/* Brand Pill */}
+          <div className="flex items-center gap-2 px-3 py-1 bg-gradient-to-r from-sky-500/20 to-blue-600/20 border border-sky-500/30 rounded-full shadow-sm">
             <img src="/icon.svg" alt="MidiLens Icon" className="w-4 h-4 rounded-full shadow-sm" />
             <span className="text-xs font-mono font-bold uppercase tracking-wider text-sky-300">
               MIDILENS
             </span>
           </div>
 
+          {/* Active File / Pattern Status Pill */}
+          <div
+            className="flex items-center gap-2 px-3 py-1 bg-[#1b1e2a] border border-amber-500/30 rounded-xl font-mono text-xs shadow-inner"
+            title={`Active sequence: ${sequence.name} (${sequence.notes.length} notes, ${sequence.bpm} BPM)`}
+          >
+            <Music className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span className="text-[10px] text-slate-400 uppercase font-semibold">Active:</span>
+            <span className="font-bold text-amber-300 truncate max-w-[260px]">{sequence.name}</span>
+            <span className="text-[10px] text-slate-400 font-mono">({sequence.notes.length} notes)</span>
+          </div>
+
+          {/* Dice next to Active to pick random file from library */}
+          <button
+            onClick={handleRandomPick}
+            className="flex items-center gap-1.5 px-3 py-1 bg-[#202433] hover:bg-amber-500/20 border border-amber-500/40 hover:border-amber-400 text-amber-300 rounded-xl font-mono text-xs font-bold transition shadow-sm group"
+            title={
+              scannedFiles.length > 0
+                ? `Pick a random MIDI file from your library (${scannedFiles.length.toLocaleString()} files)`
+                : 'Pick a random factory pattern'
+            }
+          >
+            <Dices className="w-4 h-4 text-amber-400 group-hover:rotate-45 transition-transform" />
+            <span>Random</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Line 2: Presets, Unified Library & Files Dropdown, Scan Folder, Open, Drag to DAW */}
+      <div className="flex items-center justify-between gap-2 px-4 py-2 bg-[#1b1e2a] border-b border-slate-800/80 overflow-x-auto no-scrollbar">
+        {/* Left: Preset Box + Unified Library & Dropdown Box */}
+        <div className="flex items-center gap-2 shrink-0">
           {/* MidiLens Settings Preset Manager Button */}
           <button
             onClick={() => setShowPresetDrawer(true)}
-            className="flex items-center gap-2 bg-[#232736] hover:bg-slate-700/80 border border-sky-500/30 rounded-xl px-3 py-1.5 text-sky-300 font-mono font-bold text-xs shadow-sm transition group"
+            className="flex items-center gap-1.5 bg-[#232736] hover:bg-slate-700/80 border border-sky-500/30 rounded-xl px-2.5 py-1.5 text-sky-300 font-mono font-bold text-xs shadow-sm transition group shrink-0"
             title="Open Preset Manager to load/save scale, quantization & humanize settings"
           >
             <Bookmark className="w-3.5 h-3.5 text-sky-400 group-hover:scale-110 transition-transform" />
-            <span className="truncate max-w-[160px]">Preset: {activeLensPreset.name}</span>
+            <span className="truncate max-w-[110px] sm:max-w-[130px]">Preset: {activeLensPreset.name}</span>
             <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
           </button>
 
-          {/* MIDI Groove Sequence Navigator Bar */}
-          <div className="flex items-center bg-[#232736] border border-slate-700/60 rounded-xl p-0.5 shadow-sm">
+          {/* Unified Library Box & Narrow Drop Down List of Files */}
+          <div className="flex items-center bg-[#232736] border border-slate-700/60 rounded-xl p-0.5 shadow-sm shrink-0">
             <button
-              onClick={() => handleSelectSequence(currentSequenceIdx - 1)}
-              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-700/50 rounded-lg transition"
-              title="Previous Groove Pattern"
+              onClick={() => handleStepItem(-1)}
+              className="p-1 text-slate-400 hover:text-white hover:bg-slate-700/50 rounded-lg transition"
+              title="Previous MIDI File / Pattern"
             >
-              <ChevronLeft className="w-4 h-4" />
+              <ChevronLeft className="w-3.5 h-3.5" />
             </button>
 
-            <select
-              className="text-xs bg-transparent text-slate-200 font-semibold cursor-pointer px-2.5 py-1 focus:outline-none max-w-[180px] truncate"
-              onChange={(e) => handleSelectSequence(Number(e.target.value))}
-              value={currentSequenceIdx >= 0 ? currentSequenceIdx : 0}
-            >
-              {PRESET_SEQUENCES.map((p, idx) => (
-                <option key={p.name} value={idx} className="bg-[#1b1e2a] text-slate-200">
-                  {p.name}
-                </option>
-              ))}
-            </select>
-
-            <button
-              onClick={() => handleSelectSequence(currentSequenceIdx + 1)}
-              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-700/50 rounded-lg transition"
-              title="Next Groove Pattern"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* Action Buttons: Scan Folder & Open File */}
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={() => folderInputRef.current?.click()}
-              className="flex items-center gap-1.5 text-xs bg-[#232736] hover:bg-slate-700/80 border border-slate-700/60 rounded-xl px-3 py-1.5 text-amber-300 font-medium transition shadow-sm"
-              title="Scan a folder and all its subfolders on your hard drive for .mid files"
-            >
-              <FolderSearch className="w-3.5 h-3.5 text-amber-400" />
-              <span>Scan Folder</span>
-            </button>
-            <input
-              ref={folderInputRef}
-              type="file"
-              // @ts-expect-error webkitdirectory is standard
-              webkitdirectory="true"
-              directory="true"
-              multiple
-              className="hidden"
-              onChange={handleFolderScan}
-            />
-
-            {scannedFiles.length > 0 && (
-              <button
-                onClick={() => setShowFolderModal(true)}
-                className="flex items-center gap-1.5 text-xs bg-amber-500/15 border border-amber-500/30 rounded-xl px-3 py-1.5 text-amber-300 font-mono transition"
+            <div className="flex items-center px-1">
+              <select
+                className="text-xs bg-transparent text-slate-200 font-semibold cursor-pointer px-1 py-1 focus:outline-none w-[125px] sm:w-[155px] max-w-[155px] truncate"
+                onChange={(e) => handleItemSelect(e.target.value)}
+                value={
+                  activeSourceType === 'scanned' && currentScannedFileIdx >= 0
+                    ? `scanned_${currentScannedFileIdx}`
+                    : activeSourceType === 'preset' && currentSequenceIdx >= 0
+                    ? `preset_${currentSequenceIdx}`
+                    : activeSourceType === 'custom'
+                    ? 'custom_file'
+                    : 'preset_0'
+                }
+                title="Select a scanned MIDI file or factory groove"
               >
-                <FolderOpen className="w-3.5 h-3.5" />
-                <span>Library ({scannedFiles.length})</span>
-              </button>
-            )}
+                {activeSourceType === 'custom' && (
+                  <optgroup label="📄 Active Open File">
+                    <option value="custom_file" className="bg-[#1b1e2a] text-slate-200">
+                      {sequence.name}.mid
+                    </option>
+                  </optgroup>
+                )}
+
+                {scannedFiles.length > 0 && (
+                  <optgroup label={`📁 Scanned MIDI Files (${scannedFiles.length.toLocaleString()})`}>
+                    {scannedFiles.slice(0, 1000).map((f, idx) => (
+                      <option key={`scanned_${idx}`} value={`scanned_${idx}`} className="bg-[#1b1e2a] text-slate-200">
+                        {idx + 1}. {f.name}
+                      </option>
+                    ))}
+                    {scannedFiles.length > 1000 && (
+                      <option disabled className="bg-[#1b1e2a] text-slate-500">
+                        ... +{(scannedFiles.length - 1000).toLocaleString()} more in Library modal
+                      </option>
+                    )}
+                  </optgroup>
+                )}
+
+                <optgroup label="🎵 Factory Grooves & Patterns">
+                  {PRESET_SEQUENCES.map((p, idx) => (
+                    <option key={`preset_${idx}`} value={`preset_${idx}`} className="bg-[#1b1e2a] text-slate-200">
+                      {p.name}
+                    </option>
+                  ))}
+                </optgroup>
+              </select>
+            </div>
 
             <button
-              onClick={() => fileInputRef.current?.click()}
-              className="flex items-center gap-1.5 text-xs bg-[#232736] hover:bg-slate-700/80 border border-slate-700/60 rounded-xl px-3 py-1.5 text-slate-300 font-medium transition shadow-sm"
+              onClick={() => handleStepItem(1)}
+              className="p-1 text-slate-400 hover:text-white hover:bg-slate-700/50 rounded-lg transition mr-1"
+              title="Next MIDI File / Pattern"
             >
-              <Upload className="w-3.5 h-3.5 text-slate-400" />
-              <span>Open</span>
+              <ChevronRight className="w-3.5 h-3.5" />
             </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".mid,.midi"
-              className="hidden"
-              onChange={handleFileUpload}
-            />
+
+            {/* Integrated Compact Library Button */}
+            <button
+              onClick={() => setShowFolderModal(true)}
+              className="flex items-center gap-1.5 text-xs bg-[#171a24] hover:bg-amber-500/20 text-amber-300 border border-slate-700/70 hover:border-amber-500/40 rounded-lg px-2 py-1 font-mono transition shrink-0"
+              title={`Open full searchable Library browser (${scannedFiles.length.toLocaleString()} files)`}
+            >
+              <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
+              <span className="font-semibold">Library</span>
+              {scannedFiles.length > 0 && (
+                <span className="text-[10px] bg-amber-500/20 text-amber-300 px-1 py-0.2 rounded font-bold">
+                  {scannedFiles.length > 999
+                    ? `${(scannedFiles.length / 1000).toFixed(0)}k`
+                    : scannedFiles.length}
+                </span>
+              )}
+            </button>
           </div>
         </div>
 
-        {/* Right: Drag-Out to DAW Handle (Sleek Amber Region Exporter) */}
-        <div className="flex items-center gap-3">
+        {/* Right: Scan Folder, Open, and Drag to DAW placed NEXT TO EACH OTHER */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {/* Scan Folder Button */}
           <button
-            onClick={exportMidiFile}
+            onClick={handleScanFolderClick}
+            disabled={isScanning}
+            className="flex items-center gap-1.5 text-xs bg-[#232736] hover:bg-slate-700/80 disabled:opacity-50 border border-slate-700/60 rounded-xl px-2.5 py-1.5 text-amber-300 font-medium transition shadow-sm whitespace-nowrap"
+            title="Scan a folder and all its subfolders on your computer for .mid files"
+          >
+            {isScanning ? (
+              <Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" />
+            ) : (
+              <FolderSearch className="w-3.5 h-3.5 text-amber-400" />
+            )}
+            <span>{isScanning ? `Scanning...` : 'Scan Folder'}</span>
+          </button>
+          <input
+            ref={folderInputRef}
+            type="file"
+            // @ts-expect-error webkitdirectory is standard in Chromium, Safari and Edge
+            webkitdirectory=""
+            directory=""
+            multiple
+            className="hidden"
+            onChange={handleFolderScan}
+          />
+
+          {/* Open Button */}
+          <button
+            onClick={() => {
+              if (fileInputRef.current) {
+                fileInputRef.current.value = '';
+                fileInputRef.current.click();
+              }
+            }}
+            className="flex items-center gap-1.5 text-xs bg-[#232736] hover:bg-slate-700/80 border border-slate-700/60 rounded-xl px-2.5 py-1.5 text-slate-300 font-medium transition shadow-sm whitespace-nowrap"
+            title="Open one or multiple MIDI (.mid) files from your computer"
+          >
+            <Upload className="w-3.5 h-3.5 text-slate-400" />
+            <span>Open</span>
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".mid,.midi"
+            multiple
+            className="hidden"
+            onChange={handleFileUpload}
+          />
+
+          {/* Export MIDI / Drag to DAW Button */}
+          <button
+            onClick={() => setShowExportModal(true)}
             draggable
             onDragStart={(e) => {
               e.dataTransfer.setData('text/plain', sequence.name);
             }}
-            title="Drag or click to export modified MIDI into your DAW track or filesystem"
-            className="group relative flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold text-xs rounded-xl shadow-lg shadow-amber-500/20 cursor-grab active:cursor-grabbing transition"
+            title="Export piano roll as Type 0 or Type 1 .mid file directly to your machine"
+            className="group relative flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold text-xs rounded-xl shadow-lg shadow-amber-500/20 cursor-grab active:cursor-grabbing transition whitespace-nowrap"
           >
-            <Download className="w-4 h-4 text-slate-950 group-hover:-translate-y-0.5 transition-transform" />
-            <span>DRAG TO DAW (.MID)</span>
+            <Download className="w-3.5 h-3.5 text-slate-950 group-hover:-translate-y-0.5 transition-transform" />
+            <span>EXPORT MIDI (.MID)</span>
           </button>
         </div>
       </div>
+
+      {/* Top Interactive Notification / Scan Alert Banner */}
+      {notificationBanner && (
+        <div className="bg-amber-500/15 border-b border-amber-500/30 px-5 py-2 flex items-center justify-between text-xs font-mono text-amber-300 transition animate-in fade-in">
+          <div className="flex items-center gap-2 truncate">
+            {isScanning || isWaitingFolderAuth ? (
+              <Loader2 className="w-4 h-4 animate-spin text-amber-400 shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+            )}
+            <span className="truncate">{notificationBanner}</span>
+          </div>
+          {!isScanning && !isWaitingFolderAuth && (
+            <button
+              onClick={() => setNotificationBanner(null)}
+              className="text-slate-400 hover:text-white p-1 ml-2 shrink-0 transition"
+              title="Dismiss notification"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Control Strip (Scaler 3 style DAW toolbar) */}
       <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-2.5 bg-[#171a24] border-b border-slate-800">
@@ -678,10 +1369,73 @@ export const PluginSimulator: React.FC = () => {
             </div>
             <div className="w-px h-6 bg-slate-800" />
             <div className="flex flex-col">
-              <span className="text-[9px] uppercase text-slate-500 tracking-wider">TEMPO</span>
-              <span className="font-bold text-amber-400">
-                {Math.round(sequence.bpm * params.speedMultiplier)} BPM
-              </span>
+              <div className="flex items-center gap-1">
+                <span className="text-[9px] uppercase text-slate-500 tracking-wider">
+                  {params.syncMode === 'audition' ? 'TEMPO (MANUAL)' : 'TEMPO (DAW)'}
+                </span>
+                {params.syncMode === 'daw' ? (
+                  <span title="Locked to DAW host">
+                    <Lock className="w-2.5 h-2.5 text-slate-500" />
+                  </span>
+                ) : (
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" title="Free Audition: Manual BPM active" />
+                )}
+              </div>
+              {params.syncMode === 'audition' ? (
+                <div className="flex items-center gap-1 mt-0.5">
+                  <button
+                    onClick={() => handleTempoChange(sequence.bpm - 1)}
+                    className="w-4 h-4 rounded bg-slate-800 hover:bg-slate-700 text-amber-300 flex items-center justify-center text-[10px] transition"
+                    title="Decrease manual BPM (-1, Shift+Click -5)"
+                    onMouseDown={(e) => {
+                      if (e.shiftKey) handleTempoChange(sequence.bpm - 5);
+                    }}
+                  >
+                    <Minus className="w-2.5 h-2.5" />
+                  </button>
+
+                  <input
+                    type="number"
+                    min={20}
+                    max={320}
+                    value={tempoInputValue}
+                    onChange={(e) => {
+                      setTempoInputValue(e.target.value);
+                      const val = parseInt(e.target.value, 10);
+                      if (!isNaN(val) && val >= 20 && val <= 320) {
+                        handleTempoChange(val);
+                      }
+                    }}
+                    onBlur={() => {
+                      const val = parseInt(tempoInputValue, 10);
+                      if (isNaN(val) || val < 20 || val > 320) {
+                        setTempoInputValue(String(sequence.bpm));
+                      } else {
+                        handleTempoChange(val);
+                      }
+                    }}
+                    className="w-11 bg-slate-900 border border-slate-700/80 rounded px-1 py-0 text-center font-bold text-amber-400 text-xs focus:border-amber-400 focus:outline-none"
+                    title="Type manual BPM (20-320)"
+                  />
+
+                  <button
+                    onClick={() => handleTempoChange(sequence.bpm + 1)}
+                    className="w-4 h-4 rounded bg-slate-800 hover:bg-slate-700 text-amber-300 flex items-center justify-center text-[10px] transition"
+                    title="Increase manual BPM (+1, Shift+Click +5)"
+                    onMouseDown={(e) => {
+                      if (e.shiftKey) handleTempoChange(sequence.bpm + 5);
+                    }}
+                  >
+                    <Plus className="w-2.5 h-2.5" />
+                  </button>
+                  <span className="text-[10px] text-amber-400/80 font-bold ml-0.5">BPM</span>
+                </div>
+              ) : (
+                <span className="font-bold text-amber-400 flex items-center gap-1" title="Synced to DAW host">
+                  {Math.round(sequence.bpm * params.speedMultiplier)} BPM
+                  <span className="text-[9px] text-slate-500 font-normal">[DAW]</span>
+                </span>
+              )}
             </div>
             <div className="w-px h-6 bg-slate-800" />
             <div className="flex flex-col">
@@ -693,7 +1447,7 @@ export const PluginSimulator: React.FC = () => {
           </div>
 
           {/* Timing Grid Selector */}
-          <div className="flex items-center gap-1.5 bg-[#202433] px-3 py-1.5 rounded-xl border border-slate-700/60">
+          <div className="flex items-center gap-1.5 bg-[#202433] px-3 py-1.5 rounded-xl border border-slate-700/60 shadow-sm">
             <span className="text-[10px] font-mono uppercase text-slate-400 font-semibold">Grid:</span>
             <select
               value={params.quantizeGrid}
@@ -714,9 +1468,15 @@ export const PluginSimulator: React.FC = () => {
               Q-Time
             </button>
           </div>
+
+          {/* Original Detected Key Box (Placed next to Grid box) */}
+          <div className="flex items-center gap-1.5 bg-[#202433] px-3 py-1.5 rounded-xl border border-slate-700/60 shadow-sm" title="Detected original MIDI key">
+            <span className="text-[10px] font-mono uppercase text-slate-400 font-semibold">Orig:</span>
+            <span className="text-xs font-bold text-sky-300 font-mono">{keyResult.keyName}</span>
+          </div>
         </div>
 
-        {/* Right: Scale, Sync to project key, Target key & Humanize */}
+        {/* Right: Scale, Sync to project key, Target key & Humanise */}
         <div className="flex flex-wrap items-center gap-2">
           {/* Scaler 3 Style Active Scale Pill Box with Q-Scale */}
           <div className="flex items-center gap-2 bg-[#202433] px-3 py-1.5 rounded-xl border border-slate-700/60 shadow-sm">
@@ -842,19 +1602,43 @@ export const PluginSimulator: React.FC = () => {
             </button>
           </div>
 
-          {/* Detected Key Badge */}
-          <div className="flex items-center gap-1.5 bg-[#202433] px-2.5 py-1.5 rounded-xl border border-slate-700/60" title="Detected original MIDI key">
-            <span className="text-[10px] font-mono text-slate-400">Orig:</span>
-            <span className="text-xs font-bold text-sky-300 font-mono">{keyResult.keyName}</span>
-          </div>
-
-          {/* Humanize Button */}
+          {/* Humanise Button (Placed next to Target box) */}
           <button
             onClick={() => setShowHumanizeModal(!showHumanizeModal)}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono font-bold bg-gradient-to-r from-purple-900/50 to-indigo-900/50 hover:from-purple-800/60 hover:to-indigo-800/60 text-purple-200 border border-purple-500/30 rounded-xl transition shadow-sm"
+            title="Open Humanise velocity jitter & timing swing controls"
           >
             <Wand2 className="w-3.5 h-3.5 text-purple-300" />
             <span>Humanise</span>
+          </button>
+
+          {/* Arpeggiator Module Toggle Button */}
+          <button
+            onClick={() => setShowArpPanel(!showArpPanel)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono font-bold rounded-xl transition shadow-sm border ${
+              params.arpEnabled || showArpPanel
+                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                : 'bg-[#202433] text-slate-400 border-slate-700/60 hover:text-white'
+            }`}
+            title="Toggle Arpeggiator control panel"
+          >
+            <Zap className={`w-3.5 h-3.5 ${params.arpEnabled ? 'text-amber-400 animate-pulse' : 'text-slate-400'}`} />
+            <span>Arpeggiator</span>
+            {params.arpEnabled && <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />}
+          </button>
+
+          {/* Chord Visualizer Toggle Button */}
+          <button
+            onClick={() => setShowChordVisualizer(!showChordVisualizer)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono font-bold rounded-xl transition shadow-sm border ${
+              showChordVisualizer
+                ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                : 'bg-[#202433] text-slate-400 border-slate-700/60 hover:text-white'
+            }`}
+            title="Toggle real-time Chord Analysis & Audio Visualizer"
+          >
+            <Activity className="w-3.5 h-3.5 text-sky-400" />
+            <span>Chord Visualizer</span>
           </button>
         </div>
       </div>
@@ -927,8 +1711,19 @@ export const PluginSimulator: React.FC = () => {
         </div>
       )}
 
+      {/* Arpeggiator Control Module Panel */}
+      {showArpPanel && (
+        <div className="p-2 bg-[#141722] border-b border-slate-800">
+          <ArpeggiatorControls
+            params={params}
+            onParamsChange={setParams}
+            onApplyArpToSequence={handleApplyArpToSequence}
+          />
+        </div>
+      )}
+
       {/* Main Piano Roll Canvas Container */}
-      <div className="flex-1 w-full min-h-[400px] p-2 bg-[#141722]">
+      <div className="flex-1 w-full min-h-[380px] p-2 bg-[#141722]">
         <PianoRoll
           notes={sequence.notes}
           totalLengthPpq={sequence.totalLengthPpq}
@@ -946,22 +1741,157 @@ export const PluginSimulator: React.FC = () => {
             pushHistorySnapshot('Change Length');
             setSequence((s) => ({ ...s, totalLengthPpq: newLength }));
           }}
+          selectedNoteIds={selectedNoteIds}
           onSelectedNotesChange={(ids) => setSelectedNoteIds(ids)}
         />
       </div>
 
+      {/* Real-time Chord Analysis & Audio Oscilloscope Visualizer */}
+      {showChordVisualizer && (
+        <div className="p-2 bg-[#141722] border-t border-slate-800">
+          <ChordVisualizer
+            activePitches={activePitches}
+            sequenceNotes={sequence.notes}
+            playheadPpq={playheadPpq}
+            selectedNoteIds={selectedNoteIds}
+            scaleRoot={params.scaleRoot}
+            scaleType={params.scaleType}
+          />
+        </div>
+      )}
+
       {/* Bottom Footer / Controls Bar (Scaler 3 style bottom strip) */}
       <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-3 bg-[#1b1e2a] border-t border-slate-800/80 text-xs font-mono">
-        {/* Velocity Color Heatmap Legend */}
+        {/* Interactive Velocity Heatmap & Proportional Slider + Select All Button */}
         <div className="flex items-center gap-3">
-          <span className="text-slate-400 uppercase font-semibold text-[10px] tracking-wider">
-            Velocity Heatmap:
+          <span className="text-slate-400 uppercase font-semibold text-[10px] tracking-wider flex items-center gap-1.5">
+            Velocity:
           </span>
+
+          {/* Interactive Heatmap Slider Track */}
           <div className="flex items-center gap-2">
-            <span className="text-emerald-400 font-bold text-[10px]">Soft (0)</span>
-            <div className="w-36 h-2.5 rounded-full bg-gradient-to-r from-emerald-400 via-amber-300 to-rose-500 border border-slate-700 shadow-sm" />
-            <span className="text-rose-400 font-bold text-[10px]">Loud (127)</span>
+            <span className="text-emerald-400 font-bold text-[9px] shrink-0">Soft (1)</span>
+
+            <div
+              ref={heatmapBarRef}
+              onMouseDown={handleVelocityMouseDown}
+              className={`relative w-44 sm:w-56 h-6 rounded-lg bg-gradient-to-r from-emerald-400 via-amber-300 to-rose-500 border border-slate-700/80 shadow-inner flex items-center select-none cursor-pointer transition-all ${
+                hasSelectedNotes ? 'ring-2 ring-sky-500/40 shadow-lg' : 'hover:border-slate-500'
+              }`}
+              title={
+                hasSelectedNotes
+                  ? `Velocity: ${avgMidiVelocity} / 127 · Drag slider up/down or across track to adjust`
+                  : 'Select note(s) to view and adjust velocity, or click to adjust all'
+              }
+            >
+              {/* If notes are selected, display interactive line/slider thumb */}
+              {hasSelectedNotes ? (
+                <>
+                  {/* Glowing Vertical Slider Line */}
+                  <div
+                    className="absolute top-0 bottom-0 w-1 bg-white shadow-[0_0_8px_rgba(255,255,255,0.95)] -translate-x-1/2 pointer-events-none z-10"
+                    style={{ left: `${linePercent}%` }}
+                  />
+
+                  {/* Top Slider Pin Thumb */}
+                  <div
+                    className="absolute -top-1.5 w-3.5 h-3.5 bg-white border-2 border-slate-900 rounded-full shadow-md -translate-x-1/2 z-20 hover:scale-125 transition-transform"
+                    style={{ left: `${linePercent}%` }}
+                  />
+
+                  {/* Bottom Slider Pin Thumb */}
+                  <div
+                    className="absolute -bottom-1.5 w-3.5 h-3.5 bg-white border-2 border-slate-900 rounded-full shadow-md -translate-x-1/2 z-20 hover:scale-125 transition-transform"
+                    style={{ left: `${linePercent}%` }}
+                  />
+
+                  {/* Value Tooltip Badge */}
+                  <div
+                    className="absolute -top-7 -translate-x-1/2 bg-[#0d1017] border border-amber-400/80 px-2 py-0.5 rounded text-[10px] font-mono font-bold text-amber-300 shadow-xl pointer-events-none whitespace-nowrap z-30"
+                    style={{ left: `${linePercent}%` }}
+                  >
+                    {selectedNotes.length === 1
+                      ? `Vel: ${avgMidiVelocity}`
+                      : `Avg: ${avgMidiVelocity} (${selectedNotes.length} notes)`}
+                  </div>
+                </>
+              ) : (
+                <div className="w-full text-center text-[9px] text-slate-900/80 font-bold tracking-tight pointer-events-none truncate px-1">
+                  Click to set velocity
+                </div>
+              )}
+            </div>
+
+            <span className="text-rose-400 font-bold text-[9px] shrink-0">Loud (127)</span>
+
+            {/* Micro Stepper & Direct Numeric Value */}
+            {hasSelectedNotes && (
+              <div className="flex items-center gap-1 bg-[#10131d] px-1.5 py-0.5 rounded-lg border border-slate-700/80 ml-1">
+                <button
+                  onClick={() => {
+                    const newVel = Math.max(0.01, (avgMidiVelocity - 2) / 127);
+                    applyVelocityToSelectedNotes(newVel, true);
+                  }}
+                  className="w-4 h-4 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center justify-center text-[10px] transition active:scale-95"
+                  title="Decrease velocity (-2, Shift-click -8)"
+                  onMouseDown={(e) => {
+                    if (e.shiftKey) {
+                      e.stopPropagation();
+                      const newVel = Math.max(0.01, (avgMidiVelocity - 8) / 127);
+                      applyVelocityToSelectedNotes(newVel, true);
+                    }
+                  }}
+                >
+                  <Minus className="w-2.5 h-2.5" />
+                </button>
+
+                <span className="font-mono font-bold text-amber-400 text-[11px] min-w-[28px] text-center">
+                  {avgMidiVelocity}
+                </span>
+
+                <button
+                  onClick={() => {
+                    const newVel = Math.min(1.0, (avgMidiVelocity + 2) / 127);
+                    applyVelocityToSelectedNotes(newVel, true);
+                  }}
+                  className="w-4 h-4 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center justify-center text-[10px] transition active:scale-95"
+                  title="Increase velocity (+2, Shift-click +8)"
+                  onMouseDown={(e) => {
+                    if (e.shiftKey) {
+                      e.stopPropagation();
+                      const newVel = Math.min(1.0, (avgMidiVelocity + 8) / 127);
+                      applyVelocityToSelectedNotes(newVel, true);
+                    }
+                  }}
+                >
+                  <Plus className="w-2.5 h-2.5" />
+                </button>
+              </div>
+            )}
           </div>
+
+          {/* Select All Button next to the velocity heatmap */}
+          <button
+            onClick={handleToggleSelectAllNotes}
+            className={`px-2.5 py-1 text-[11px] font-mono font-bold rounded-xl border transition flex items-center gap-1.5 shrink-0 ${
+              selectedNoteIds.size === sequence.notes.length && sequence.notes.length > 0
+                ? 'bg-sky-500/20 text-sky-300 border-sky-500/40 shadow-sm'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700/80 hover:text-white'
+            }`}
+            title="Select all notes in piano roll (Cmd+A / Ctrl+A)"
+          >
+            <CheckSquare className="w-3.5 h-3.5 text-sky-400" />
+            <span>
+              {selectedNoteIds.size === sequence.notes.length && sequence.notes.length > 0
+                ? 'Deselect All'
+                : 'Select All'}
+            </span>
+            {selectedNoteIds.size > 0 && (
+              <span className="text-[10px] text-sky-400 font-mono">
+                ({selectedNoteIds.size})
+              </span>
+            )}
+          </button>
         </div>
 
         {/* Realtime Transpose, Harmonise & Speed Controls */}
@@ -1082,6 +2012,97 @@ export const PluginSimulator: React.FC = () => {
               <option value="audition" className="bg-[#1b1e2a]">Free Audition</option>
             </select>
           </div>
+
+          {/* Dedicated Manual Tempo Controls when not synced to DAW */}
+          {params.syncMode === 'audition' ? (
+            <div className="flex items-center gap-1.5 bg-[#202433] px-2.5 py-1 rounded-xl border border-amber-500/40 shadow-sm animate-in fade-in duration-150">
+              <span className="text-[10px] font-mono uppercase text-amber-400 font-bold flex items-center gap-1">
+                BPM:
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => handleTempoChange(sequence.bpm - 1)}
+                  className="w-5 h-5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center justify-center text-xs transition active:scale-95"
+                  title="Decrease tempo by 1 BPM (Shift-click for -5)"
+                  onMouseDown={(e) => {
+                    if (e.shiftKey) handleTempoChange(sequence.bpm - 5);
+                  }}
+                >
+                  <Minus className="w-3 h-3" />
+                </button>
+
+                <input
+                  type="number"
+                  min={20}
+                  max={320}
+                  value={tempoInputValue}
+                  onChange={(e) => {
+                    setTempoInputValue(e.target.value);
+                    const val = parseInt(e.target.value, 10);
+                    if (!isNaN(val) && val >= 20 && val <= 320) {
+                      handleTempoChange(val);
+                    }
+                  }}
+                  onBlur={() => {
+                    const val = parseInt(tempoInputValue, 10);
+                    if (isNaN(val) || val < 20 || val > 320) {
+                      setTempoInputValue(String(sequence.bpm));
+                    } else {
+                      handleTempoChange(val);
+                    }
+                  }}
+                  className="w-12 bg-[#10121a] border border-slate-700/80 rounded px-1 py-0.5 text-center font-mono font-bold text-amber-400 text-xs focus:border-amber-400 focus:outline-none"
+                  title="Manual tempo (20 - 320 BPM)"
+                />
+
+                <button
+                  onClick={() => handleTempoChange(sequence.bpm + 1)}
+                  className="w-5 h-5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center justify-center text-xs transition active:scale-95"
+                  title="Increase tempo by 1 BPM (Shift-click for +5)"
+                  onMouseDown={(e) => {
+                    if (e.shiftKey) handleTempoChange(sequence.bpm + 5);
+                  }}
+                >
+                  <Plus className="w-3 h-3" />
+                </button>
+
+                {/* Tap Tempo Button */}
+                <button
+                  onClick={handleTapTempo}
+                  className={`px-2 py-0.5 rounded-md text-[10px] font-bold font-mono transition ml-0.5 ${
+                    isTapActive
+                      ? 'bg-amber-400 text-slate-950 scale-105 shadow'
+                      : 'bg-slate-800 hover:bg-slate-700 text-amber-300'
+                  }`}
+                  title="Tap Tempo: Click repeatedly in rhythm to detect tempo"
+                >
+                  TAP
+                </button>
+
+                {/* Quick Tempo Shortcuts */}
+                <div className="hidden sm:flex items-center gap-0.5 ml-1 border-l border-slate-700/60 pl-1.5">
+                  {[80, 100, 120, 140, 160].map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => handleTempoChange(t)}
+                      className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold transition ${
+                        sequence.bpm === t
+                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                          : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                      }`}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5 bg-[#202433] px-2.5 py-1 rounded-xl border border-slate-700/60 text-[11px] font-mono text-slate-400" title="Tempo is locked to DAW host timeline">
+              <Lock className="w-3 h-3 text-slate-500" />
+              <span>DAW Host: <strong className="text-amber-400">{sequence.bpm} BPM</strong></span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1095,61 +2116,180 @@ export const PluginSimulator: React.FC = () => {
         onPresetSaved={(newPreset) => handleApplyLensPreset(newPreset)}
       />
 
+      {/* MIDI Export Modal (Type 0 / Type 1) */}
+      <MidiExportModal
+        isOpen={showExportModal}
+        onClose={() => setShowExportModal(false)}
+        sequence={sequence}
+        params={params}
+      />
+
+      {/* Real-time Non-blocking Scanning Modal Overlay */}
+      {isScanning && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-md bg-[#1b1e2a] border border-slate-700/80 rounded-2xl p-6 text-slate-100 shadow-2xl flex flex-col items-center text-center space-y-4">
+            <div className="relative w-16 h-16 flex items-center justify-center">
+              <div className="absolute inset-0 rounded-full border-2 border-amber-500/20 border-t-amber-400 animate-spin" />
+              <FolderSearch className="w-7 h-7 text-amber-400" />
+            </div>
+
+            <div className="space-y-1 w-full">
+              <h3 className="font-bold text-base text-white font-mono uppercase tracking-wide">
+                Scanning Folder for MIDI Files
+              </h3>
+              {currentScanningFolder && (
+                <p className="text-[11px] font-mono text-slate-400 max-w-sm truncate mx-auto px-2">
+                  {currentScanningFolder}
+                </p>
+              )}
+            </div>
+
+            {/* Live Non-Blocking Progress Counters */}
+            <div className="grid grid-cols-2 gap-3 w-full bg-[#141722] p-3 rounded-xl border border-slate-800 font-mono">
+              <div className="flex flex-col items-center">
+                <span className="text-[10px] text-slate-500 uppercase tracking-wider">Files Scanned</span>
+                <span className="text-sm font-bold text-slate-200">
+                  {scanProgress.scanned.toLocaleString()}
+                  {scanProgress.total > 0 ? ` / ${scanProgress.total.toLocaleString()}` : ''}
+                </span>
+              </div>
+              <div className="flex flex-col items-center">
+                <span className="text-[10px] text-slate-500 uppercase tracking-wider">MIDI Discovered</span>
+                <span className="text-sm font-bold text-amber-400">
+                  {scanProgress.found.toLocaleString()}
+                </span>
+              </div>
+            </div>
+
+            {/* Progress bar if total files known */}
+            {scanProgress.total > 0 && (
+              <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                <div
+                  className="bg-amber-400 h-full transition-all duration-150"
+                  style={{ width: `${Math.min(100, (scanProgress.scanned / scanProgress.total) * 100)}%` }}
+                />
+              </div>
+            )}
+
+            <div className="flex items-center gap-2 pt-2">
+              {scanProgress.found > 0 && (
+                <button
+                  onClick={stopAndShowResults}
+                  className="px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold font-mono text-xs rounded-xl shadow-md transition"
+                >
+                  Stop & View {scanProgress.found} Files
+                </button>
+              )}
+              <button
+                onClick={cancelScan}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-mono text-xs rounded-xl transition"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Scanned Folder Library Modal */}
       {showFolderModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4 animate-in fade-in duration-150">
           <div className="w-full max-w-2xl bg-[#1b1e2a] border border-slate-700/80 rounded-2xl overflow-hidden shadow-2xl flex flex-col max-h-[85vh]">
             <div className="flex items-center justify-between px-5 py-3.5 bg-[#141722] border-b border-slate-800">
               <div className="flex items-center gap-2">
                 <FolderSearch className="w-5 h-5 text-amber-400" />
                 <h3 className="font-bold text-sm text-white font-mono">
-                  SCANNED MIDI LIBRARY ({scannedFiles.length} files found)
+                  SCANNED MIDI LIBRARY ({scannedFiles.length.toLocaleString()} files found)
                 </h3>
               </div>
-              <button onClick={() => setShowFolderModal(false)} className="text-slate-400 hover:text-white">
+              <button onClick={() => setShowFolderModal(false)} className="text-slate-400 hover:text-white p-1">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="p-3 bg-[#171a24] border-b border-slate-800 flex items-center gap-2">
-              <Search className="w-4 h-4 text-slate-500" />
+              <Search className="w-4 h-4 text-slate-500 shrink-0" />
               <input
                 type="text"
                 placeholder="Search MIDI files or subfolders..."
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setVisibleLibraryCount(50);
+                }}
                 className="w-full bg-transparent text-xs font-mono text-slate-200 placeholder-slate-500 focus:outline-none"
               />
             </div>
 
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
               {filteredScannedFiles.length === 0 ? (
-                <div className="p-8 text-center text-xs font-mono text-slate-500">
-                  No MIDI files matching "{searchQuery}"
+                <div className="p-8 text-center text-xs font-mono space-y-3">
+                  <div className="w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center mx-auto">
+                    <FolderSearch className="w-6 h-6" />
+                  </div>
+                  <p className="text-slate-300 font-semibold">
+                    {scannedFiles.length === 0
+                      ? 'No .mid or .midi files were found in the selected folder.'
+                      : `No MIDI files matching "${searchQuery}"`}
+                  </p>
+                  <p className="text-[11px] text-slate-500 max-w-md mx-auto leading-relaxed">
+                    Tip: When the browser dialog opens, click <strong className="text-amber-400">"Upload"</strong> or <strong className="text-amber-400">"Allow"</strong> when prompted to allow reading the folder and subfolders. You can also drag-and-drop any folder or <code className="text-sky-300">.mid</code> files directly into the window!
+                  </p>
                 </div>
               ) : (
-                filteredScannedFiles.map((f, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => {
-                      pushHistorySnapshot(`Load ${f.name}`);
-                      loadMidiFromFile(f.file);
-                      setShowFolderModal(false);
-                    }}
-                    className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-left text-xs font-mono bg-[#141722]/60 hover:bg-amber-500/10 hover:border-amber-500/30 border border-slate-800/80 transition"
-                  >
-                    <div className="flex items-center gap-3 truncate">
-                      <FileMusic className="w-4 h-4 text-amber-400 shrink-0" />
-                      <div className="truncate">
-                        <span className="font-semibold text-slate-200 block truncate">{f.name}</span>
-                        <span className="text-[10px] text-slate-500 block truncate">{f.relativePath}</span>
+                <>
+                  {filteredScannedFiles.slice(0, visibleLibraryCount).map((f, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => {
+                        const originalIdx = scannedFiles.findIndex((sf) => sf.relativePath === f.relativePath);
+                        setCurrentScannedFileIdx(originalIdx >= 0 ? originalIdx : idx);
+                        setActiveSourceType('scanned');
+                        pushHistorySnapshot(`Load ${f.name}`);
+                        loadMidiFromFile(f.file);
+                        setShowFolderModal(false);
+                        setNotificationBanner(`✓ Loaded "${f.name}"`);
+                        setTimeout(() => setNotificationBanner(null), 3500);
+                      }}
+                      className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-left text-xs font-mono bg-[#141722]/60 hover:bg-amber-500/10 hover:border-amber-500/30 border border-slate-800/80 transition group"
+                    >
+                      <div className="flex items-center gap-3 truncate">
+                        <FileMusic className="w-4 h-4 text-amber-400 group-hover:scale-110 shrink-0 transition-transform" />
+                        <div className="truncate">
+                          <span className="font-semibold text-slate-200 block truncate group-hover:text-amber-300 transition">
+                            {f.name}
+                          </span>
+                          <span className="text-[10px] text-slate-500 block truncate">{f.relativePath}</span>
+                        </div>
+                      </div>
+                      <span className="text-[10px] text-slate-500 shrink-0 ml-3 font-mono">
+                        {(f.sizeBytes / 1024).toFixed(1)} KB
+                      </span>
+                    </button>
+                  ))}
+
+                  {filteredScannedFiles.length > visibleLibraryCount && (
+                    <div className="p-3 text-center border-t border-slate-800/80 bg-[#141722]/40 rounded-xl mt-2 flex flex-col sm:flex-row items-center justify-between gap-2">
+                      <span className="text-[11px] font-mono text-slate-400">
+                        Showing {visibleLibraryCount} of {filteredScannedFiles.length} files
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setVisibleLibraryCount((prev) => prev + 50)}
+                          className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-sky-300 font-mono text-xs font-semibold rounded-xl border border-slate-700 transition"
+                        >
+                          Show +50 More
+                        </button>
+                        <button
+                          onClick={() => setVisibleLibraryCount(filteredScannedFiles.length)}
+                          className="px-3.5 py-1.5 bg-sky-950/60 hover:bg-sky-900 text-sky-200 font-mono text-xs font-semibold rounded-xl border border-sky-700/50 transition"
+                        >
+                          Show All ({filteredScannedFiles.length})
+                        </button>
                       </div>
                     </div>
-                    <span className="text-[10px] text-slate-500 shrink-0 ml-3 font-mono">
-                      {(f.sizeBytes / 1024).toFixed(1)} KB
-                    </span>
-                  </button>
-                ))
+                  )}
+                </>
               )}
             </div>
           </div>

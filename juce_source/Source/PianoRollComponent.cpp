@@ -520,6 +520,132 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
     grabKeyboardFocus();
     dragStartPos = e.getPosition();
 
+    if (e.mods.isPopupMenu())
+    {
+        juce::PopupMenu m;
+        m.addItem(1, "Add Note");
+        if (!selectedNoteIds.empty())
+        {
+            m.addItem(2, "Delete Selected Note(s)");
+            m.addItem(3, "Duplicate Selected Note(s)");
+            m.addItem(4, "Octave Up (+12)");
+            m.addItem(5, "Octave Down (-12)");
+        }
+        m.addSeparator();
+        m.addItem(6, "Select All Notes");
+        m.addItem(7, "Deselect All");
+
+        m.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(juce::Rectangle<int>(e.getScreenPosition().x, e.getScreenPosition().y, 1, 1)),
+            [this, e](int result)
+            {
+                if (result == 1) // Add Note
+                {
+                    int pitch = pitchAtY(e.y);
+                    if (scaleLockActive && currentScale != MusicalScale::Chromatic)
+                        pitch = snapPitchToActiveScale(pitch);
+
+                    double ppq = std::max(0.0, std::round(ppqAtX(e.x) * 4.0) / 4.0);
+
+                    PlaybackEvent newEv;
+                    newEv.ppqPosition = ppq;
+                    newEv.ppqDuration = 1.0;
+                    newEv.message = juce::MidiMessage::noteOn(1, pitch, 0.75f);
+
+                    int maxId = 0;
+                    for (const auto& ev : editableEvents)
+                        maxId = std::max(maxId, ev.noteId);
+                    newEv.noteId = maxId + 1;
+
+                    editableEvents.push_back(newEv);
+                    selectedNoteIds.clear();
+                    selectedNoteIds.insert(newEv.noteId);
+
+                    if (onSequenceEdited != nullptr)
+                        onSequenceEdited(editableEvents);
+                    repaint();
+                }
+                else if (result == 2) // Delete Selected
+                {
+                    editableEvents.erase(
+                        std::remove_if(editableEvents.begin(), editableEvents.end(),
+                            [this](const PlaybackEvent& ev) { return selectedNoteIds.count(ev.noteId) > 0; }),
+                        editableEvents.end());
+                    selectedNoteIds.clear();
+                    if (onSequenceEdited != nullptr)
+                        onSequenceEdited(editableEvents);
+                    repaint();
+                }
+                else if (result == 3) // Duplicate Selected
+                {
+                    std::vector<PlaybackEvent> dups;
+                    int maxId = 0;
+                    for (const auto& ev : editableEvents)
+                        maxId = std::max(maxId, ev.noteId);
+
+                    for (const auto& ev : editableEvents)
+                    {
+                        if (selectedNoteIds.count(ev.noteId) > 0)
+                        {
+                            PlaybackEvent d = ev;
+                            d.noteId = ++maxId;
+                            d.ppqPosition += d.ppqDuration;
+                            dups.push_back(d);
+                        }
+                    }
+                    selectedNoteIds.clear();
+                    for (const auto& d : dups)
+                    {
+                        selectedNoteIds.insert(d.noteId);
+                        editableEvents.push_back(d);
+                    }
+                    if (onSequenceEdited != nullptr)
+                        onSequenceEdited(editableEvents);
+                    repaint();
+                }
+                else if (result == 4) // Octave Up
+                {
+                    for (auto& ev : editableEvents)
+                    {
+                        if (selectedNoteIds.count(ev.noteId) > 0)
+                        {
+                            int np = std::min(127, ev.message.getNoteNumber() + 12);
+                            ev.message = juce::MidiMessage::noteOn(ev.message.getChannel(), np, ev.message.getFloatVelocity());
+                        }
+                    }
+                    if (onSequenceEdited != nullptr)
+                        onSequenceEdited(editableEvents);
+                    repaint();
+                }
+                else if (result == 5) // Octave Down
+                {
+                    for (auto& ev : editableEvents)
+                    {
+                        if (selectedNoteIds.count(ev.noteId) > 0)
+                        {
+                            int np = std::max(0, ev.message.getNoteNumber() - 12);
+                            ev.message = juce::MidiMessage::noteOn(ev.message.getChannel(), np, ev.message.getFloatVelocity());
+                        }
+                    }
+                    if (onSequenceEdited != nullptr)
+                        onSequenceEdited(editableEvents);
+                    repaint();
+                }
+                else if (result == 6) // Select All
+                {
+                    selectedNoteIds.clear();
+                    for (const auto& ev : editableEvents)
+                        selectedNoteIds.insert(ev.noteId);
+                    repaint();
+                }
+                else if (result == 7) // Deselect All
+                {
+                    selectedNoteIds.clear();
+                    repaint();
+                }
+            });
+        return;
+    }
+
     float currentPixelsPerPpq = basePixelsPerPpq * zoomX;
     double totalPpq = (currentSnapshot != nullptr) ? currentSnapshot->totalLengthPpq : 16.0;
     float lengthX = pianoKeysWidth + static_cast<float>(totalPpq) * currentPixelsPerPpq;

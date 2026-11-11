@@ -1,7 +1,30 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { MidiNote, ScaleType } from '../types';
 import { isPitchInScale, snapPitchToScale, getVelocityColor } from '../scaleUtils';
-import { ZoomIn, ZoomOut, MoveHorizontal, Sparkles } from 'lucide-react';
+import { getNoteName } from '../keyDetection';
+import {
+  ZoomIn,
+  ZoomOut,
+  MoveHorizontal,
+  Sparkles,
+  Plus,
+  Trash2,
+  Copy,
+  ArrowUp,
+  ArrowDown,
+  CheckSquare,
+  X,
+  Music,
+} from 'lucide-react';
+import { synthAudioEngine } from '../audioEngine';
+
+interface ContextMenuState {
+  x: number;
+  y: number;
+  targetPpq: number;
+  targetPitch: number;
+  hitNoteId?: number;
+}
 
 interface PianoRollProps {
   notes: MidiNote[];
@@ -11,6 +34,7 @@ interface PianoRollProps {
   scaleRoot: number;
   scaleType: ScaleType;
   scaleLock: boolean;
+  selectedNoteIds?: Set<number>;
   onNotesChange: (notes: MidiNote[]) => void;
   onSeek: (ppq: number) => void;
   onLengthChange: (newLengthPpq: number) => void;
@@ -25,6 +49,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
   scaleRoot,
   scaleType,
   scaleLock,
+  selectedNoteIds: propSelectedNoteIds,
   onNotesChange,
   onSeek,
   onLengthChange,
@@ -33,11 +58,14 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  const [selectedNoteIds, setSelectedNoteIds] = useState<Set<number>>(new Set());
+  const [internalSelectedNoteIds, setInternalSelectedNoteIds] = useState<Set<number>>(new Set());
+  const selectedNoteIds = propSelectedNoteIds !== undefined ? propSelectedNoteIds : internalSelectedNoteIds;
+
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
   const updateSelectedNoteIds = useCallback(
     (newSet: Set<number>) => {
-      setSelectedNoteIds(newSet);
+      setInternalSelectedNoteIds(newSet);
       if (onSelectedNotesChange) {
         onSelectedNotesChange(newSet);
       }
@@ -363,6 +391,28 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         ctx.lineTo(x + Math.min(w - 2, 12), y + 3);
         ctx.stroke();
       }
+
+      // Note Name Label rendered directly on the note block
+      if (w >= 12 && noteHeight >= 8) {
+        const pc = ((effectivePitch % 12) + 12) % 12;
+        const octave = Math.floor(effectivePitch / 12) - 1;
+        const useFlats = [1, 3, 5, 8, 10].includes(scaleRoot);
+        const noteLetter = getNoteName(pc, useFlats);
+        const displayName = w >= 28 ? `${noteLetter}${octave}` : noteLetter;
+
+        const fontSize = Math.min(10, Math.max(7, Math.floor(noteHeight - 3)));
+        ctx.font = `bold ${fontSize}px "JetBrains Mono", monospace`;
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+
+        // Dark shadow for high contrast on light velocity colors
+        ctx.fillStyle = isSelected ? '#ffffff' : 'rgba(0, 0, 0, 0.75)';
+        ctx.fillText(displayName, x + 4, y + noteHeight / 2 + 1);
+
+        // Main text
+        ctx.fillStyle = isSelected ? '#0f172a' : '#f8fafc';
+        ctx.fillText(displayName, x + 3.5, y + noteHeight / 2);
+      }
     }
 
     // Draw Playhead (Laser line with glow)
@@ -423,6 +473,11 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
 
   // Mouse Handlers
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (contextMenu) {
+      setContextMenu(null);
+    }
+    if (e.button !== 0) return;
+
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
 
@@ -609,6 +664,227 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     dragRef.current.marquee = undefined;
   };
 
+  // Right-click Context Menu Handler
+  const handleContextMenu = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    if (y <= rulerHeight || x <= pianoKeysWidth) return;
+
+    const rawPpq = xToPpq(x);
+    // Snap targetPpq to nearest 1/16 note (0.25 PPQ)
+    const targetPpq = Math.max(0, Math.round(rawPpq * 4) / 4);
+
+    let targetPitch = yToPitch(y) - previewTranspose;
+    if (scaleLock && scaleType !== 'chromatic') {
+      targetPitch = snapPitchToScale(targetPitch, scaleRoot, scaleType);
+    }
+    targetPitch = Math.min(127, Math.max(0, targetPitch));
+
+    // Check if right click hit an existing note
+    let hitNote: MidiNote | null = null;
+    for (let i = notes.length - 1; i >= 0; i--) {
+      const n = notes[i];
+      const effPitch = n.pitch + previewTranspose;
+      const nx = ppqToX(n.startPpq);
+      const nw = Math.max(6, n.durationPpq * pixelsPerPpq);
+      const ny = pitchToY(effPitch);
+
+      if (x >= nx && x <= nx + nw && y >= ny && y <= ny + noteHeight) {
+        hitNote = n;
+        break;
+      }
+    }
+
+    if (hitNote) {
+      if (!selectedNoteIds.has(hitNote.id)) {
+        updateSelectedNoteIds(new Set([hitNote.id]));
+      }
+    }
+
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      targetPpq,
+      targetPitch,
+      hitNoteId: hitNote ? hitNote.id : undefined,
+    });
+  };
+
+  const handleAddNote = useCallback(() => {
+    if (!contextMenu) return;
+    const maxId = Math.max(0, ...notes.map((n) => n.id));
+    let pitch = contextMenu.targetPitch;
+    if (scaleLock && scaleType !== 'chromatic') {
+      pitch = snapPitchToScale(pitch, scaleRoot, scaleType);
+    }
+    pitch = Math.min(127, Math.max(0, pitch));
+
+    // Default duration 1.0 PPQ or adjusted to fit within sequence length
+    const remaining = totalLengthPpq - contextMenu.targetPpq;
+    const durationPpq = remaining > 0 ? Math.min(1.0, Math.max(0.25, remaining)) : 1.0;
+
+    let defaultVel = 0.75;
+    if (notes.length > 0) {
+      const avg = notes.reduce((s, n) => s + n.velocity, 0) / notes.length;
+      defaultVel = Math.min(1.0, Math.max(0.1, Math.round(avg * 100) / 100));
+    }
+
+    const newNote: MidiNote = {
+      id: maxId + 1,
+      pitch,
+      startPpq: contextMenu.targetPpq,
+      durationPpq,
+      velocity: defaultVel,
+      channel: 1,
+    };
+
+    onNotesChange([...notes, newNote]);
+    updateSelectedNoteIds(new Set([newNote.id]));
+    synthAudioEngine.auditionNote(pitch + previewTranspose, defaultVel, 0.35);
+    setContextMenu(null);
+  }, [
+    contextMenu,
+    notes,
+    scaleLock,
+    scaleType,
+    scaleRoot,
+    totalLengthPpq,
+    onNotesChange,
+    updateSelectedNoteIds,
+    previewTranspose,
+  ]);
+
+  const handleDeleteSelected = useCallback(() => {
+    const toDelete =
+      contextMenu?.hitNoteId !== undefined
+        ? selectedNoteIds.has(contextMenu.hitNoteId)
+          ? selectedNoteIds
+          : new Set([contextMenu.hitNoteId])
+        : selectedNoteIds;
+
+    if (toDelete.size > 0) {
+      const remaining = notes.filter((n) => !toDelete.has(n.id));
+      onNotesChange(remaining);
+      updateSelectedNoteIds(new Set());
+    }
+    setContextMenu(null);
+  }, [contextMenu, selectedNoteIds, notes, onNotesChange, updateSelectedNoteIds]);
+
+  const handleDuplicateSelected = useCallback(() => {
+    const toDup =
+      contextMenu?.hitNoteId !== undefined
+        ? selectedNoteIds.has(contextMenu.hitNoteId)
+          ? selectedNoteIds
+          : new Set([contextMenu.hitNoteId])
+        : selectedNoteIds;
+
+    if (toDup.size > 0) {
+      let maxId = Math.max(0, ...notes.map((n) => n.id));
+      const duplicated: MidiNote[] = [];
+      const newSelected = new Set<number>();
+
+      notes.forEach((n) => {
+        if (toDup.has(n.id)) {
+          maxId++;
+          const dupNote: MidiNote = {
+            ...n,
+            id: maxId,
+            startPpq: n.startPpq + n.durationPpq,
+          };
+          duplicated.push(dupNote);
+          newSelected.add(dupNote.id);
+        }
+      });
+
+      onNotesChange([...notes, ...duplicated]);
+      updateSelectedNoteIds(newSelected);
+    }
+    setContextMenu(null);
+  }, [contextMenu, selectedNoteIds, notes, onNotesChange, updateSelectedNoteIds]);
+
+  const handleTransposeOctave = useCallback(
+    (semitones: number) => {
+      const targetIds =
+        contextMenu?.hitNoteId !== undefined
+          ? selectedNoteIds.has(contextMenu.hitNoteId)
+            ? selectedNoteIds
+            : new Set([contextMenu.hitNoteId])
+          : selectedNoteIds;
+
+      if (targetIds.size > 0) {
+        const updated = notes.map((n) => {
+          if (targetIds.has(n.id)) {
+            const newPitch = Math.min(127, Math.max(0, n.pitch + semitones));
+            return { ...n, pitch: newPitch };
+          }
+          return n;
+        });
+        onNotesChange(updated);
+      }
+      setContextMenu(null);
+    },
+    [contextMenu, selectedNoteIds, notes, onNotesChange]
+  );
+
+  const handleSelectAll = useCallback(() => {
+    updateSelectedNoteIds(new Set(notes.map((n) => n.id)));
+    setContextMenu(null);
+  }, [notes, updateSelectedNoteIds]);
+
+  const handleDeselectAll = useCallback(() => {
+    updateSelectedNoteIds(new Set());
+    setContextMenu(null);
+  }, [updateSelectedNoteIds]);
+
+  // Keyboard Shortcuts: Delete, Backspace, Cmd/Ctrl+A, Escape
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName)) {
+        return;
+      }
+
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selectedNoteIds.size > 0) {
+          e.preventDefault();
+          const remaining = notes.filter((n) => !selectedNoteIds.has(n.id));
+          onNotesChange(remaining);
+          updateSelectedNoteIds(new Set());
+        }
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        updateSelectedNoteIds(new Set(notes.map((n) => n.id)));
+      } else if (e.key === 'Escape') {
+        setContextMenu(null);
+        updateSelectedNoteIds(new Set());
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [notes, selectedNoteIds, onNotesChange, updateSelectedNoteIds]);
+
+  // Close context menu on outside click
+  useEffect(() => {
+    const handleGlobalClick = (e: MouseEvent) => {
+      if (contextMenu) {
+        const menuEl = document.getElementById('piano-roll-context-menu');
+        if (menuEl && !menuEl.contains(e.target as Node)) {
+          setContextMenu(null);
+        }
+      }
+    };
+
+    if (contextMenu) {
+      window.addEventListener('mousedown', handleGlobalClick);
+      return () => window.removeEventListener('mousedown', handleGlobalClick);
+    }
+  }, [contextMenu]);
+
   const handleDoubleMidi = () => {
     const oldLength = totalLengthPpq;
     const newLength = oldLength * 2;
@@ -635,7 +911,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       className="relative w-full h-full select-none overflow-hidden rounded-xl border border-slate-700/60 bg-[#161922] shadow-inner focus:outline-none flex flex-col"
       tabIndex={0}
     >
-      {/* Bottom Floating Scaler 3 / Riffer Mini-Toolbar (kept at bottom right to never overlap top ruler, playhead, or END marker) */}
+      {/* Bottom Floating Scaler 3 / Riffer Mini-Toolbar */}
       <div className="absolute bottom-3 right-4 z-20 flex items-center gap-1.5 bg-[#1a1d28]/95 border border-slate-700/80 rounded-xl px-2.5 py-1.5 shadow-2xl backdrop-blur-md">
         {/* Zoom Controls */}
         <button
@@ -689,7 +965,109 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
+        onContextMenu={handleContextMenu}
       />
+
+      {/* Right-click Context Menu */}
+      {contextMenu && (
+        <div
+          id="piano-roll-context-menu"
+          className="fixed z-50 min-w-[210px] bg-[#1a1d29]/95 border border-slate-700/80 rounded-xl shadow-2xl p-1.5 backdrop-blur-md text-xs font-mono select-none animate-in fade-in zoom-in-95 duration-100"
+          style={{
+            left: `${Math.min(contextMenu.x, window.innerWidth - 230)}px`,
+            top: `${Math.min(contextMenu.y, window.innerHeight - 280)}px`,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Header Info Pill */}
+          <div className="px-2.5 py-1 text-[10px] text-slate-400 border-b border-slate-800 flex items-center justify-between font-semibold">
+            <span className="flex items-center gap-1 text-amber-300">
+              <Music className="w-3 h-3 text-amber-400" />
+              {getNoteName(contextMenu.targetPitch % 12)}{Math.floor(contextMenu.targetPitch / 12) - 1} · {contextMenu.targetPpq.toFixed(2)} PPQ
+            </span>
+            <button
+              onClick={() => setContextMenu(null)}
+              className="text-slate-500 hover:text-white p-0.5 rounded transition"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+
+          <div className="py-1 flex flex-col gap-0.5">
+            {/* Add Note Button */}
+            <button
+              onClick={handleAddNote}
+              className="w-full px-2.5 py-1.5 text-left text-slate-100 hover:bg-sky-500 hover:text-slate-950 rounded-lg flex items-center gap-2 transition font-bold"
+            >
+              <Plus className="w-3.5 h-3.5 text-sky-400" />
+              <span>
+                Add Note ({getNoteName(contextMenu.targetPitch % 12)}{Math.floor(contextMenu.targetPitch / 12) - 1})
+              </span>
+            </button>
+
+            {/* Note manipulation options if hit note or selection exists */}
+            {(contextMenu.hitNoteId !== undefined || selectedNoteIds.size > 0) && (
+              <>
+                <button
+                  onClick={handleDuplicateSelected}
+                  className="w-full px-2.5 py-1.5 text-left text-slate-300 hover:bg-slate-700/80 rounded-lg flex items-center gap-2 transition"
+                >
+                  <Copy className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Duplicate Note{selectedNoteIds.size > 1 ? `s (${selectedNoteIds.size})` : ''}</span>
+                </button>
+
+                <button
+                  onClick={() => handleTransposeOctave(12)}
+                  className="w-full px-2.5 py-1.5 text-left text-slate-300 hover:bg-slate-700/80 rounded-lg flex items-center gap-2 transition"
+                >
+                  <ArrowUp className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Octave Up (+12 st)</span>
+                </button>
+
+                <button
+                  onClick={() => handleTransposeOctave(-12)}
+                  className="w-full px-2.5 py-1.5 text-left text-slate-300 hover:bg-slate-700/80 rounded-lg flex items-center gap-2 transition"
+                >
+                  <ArrowDown className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Octave Down (-12 st)</span>
+                </button>
+
+                <div className="h-px bg-slate-800 my-1" />
+
+                <button
+                  onClick={handleDeleteSelected}
+                  className="w-full px-2.5 py-1.5 text-left text-rose-400 hover:bg-rose-500/20 rounded-lg flex items-center gap-2 transition font-semibold"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                  <span>
+                    Delete Note{selectedNoteIds.size > 1 ? `s (${selectedNoteIds.size})` : ''}
+                  </span>
+                </button>
+              </>
+            )}
+
+            <div className="h-px bg-slate-800 my-1" />
+
+            <button
+              onClick={handleSelectAll}
+              className="w-full px-2.5 py-1.5 text-left text-slate-300 hover:bg-slate-700/80 rounded-lg flex items-center gap-2 transition"
+            >
+              <CheckSquare className="w-3.5 h-3.5 text-slate-400" />
+              <span>Select All Notes</span>
+            </button>
+
+            {selectedNoteIds.size > 0 && (
+              <button
+                onClick={handleDeselectAll}
+                className="w-full px-2.5 py-1.5 text-left text-slate-400 hover:bg-slate-700/80 rounded-lg flex items-center gap-2 transition"
+              >
+                <X className="w-3.5 h-3.5 text-slate-400" />
+                <span>Deselect ({selectedNoteIds.size})</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

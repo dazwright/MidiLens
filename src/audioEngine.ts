@@ -1,4 +1,5 @@
 import { MidiNote, PluginParameters } from './types';
+import { arpeggiateNotes } from './arpUtils';
 
 class AudioSynthesizerEngine {
   private ctx: AudioContext | null = null;
@@ -6,6 +7,9 @@ class AudioSynthesizerEngine {
   private currentPpq = 0;
   private sequenceLengthPpq = 16;
   private currentNotes: MidiNote[] = [];
+  private effectiveNotes: MidiNote[] = [];
+  private isEffectiveDirty = true;
+
   private params: PluginParameters = {
     transpose: 0,
     speedMultiplier: 1.0,
@@ -22,6 +26,11 @@ class AudioSynthesizerEngine {
     scaleType: 'minor',
     scaleLock: true,
     quantizeGrid: '1/16',
+    arpEnabled: false,
+    arpMode: 'up',
+    arpRate: '1/16',
+    arpOctaves: 1,
+    arpGate: 0.75,
   };
 
   private tempoBpm = 120;
@@ -29,15 +38,21 @@ class AudioSynthesizerEngine {
   private lastTimestamp = 0;
   private onPlayheadCallback: ((ppq: number) => void) | null = null;
   private onStateChangeCallback: ((playing: boolean) => void) | null = null;
+  private onActivePitchesCallback: ((pitches: number[]) => void) | null = null;
+
+  // Active sounding pitches
+  private soundingPitchesMap: Map<string, number> = new Map();
 
   // Active oscillator voices to stop cleanly
   private activeVoices: Array<{
     noteId: number;
+    pitch: number;
     stop: () => void;
   }> = [];
 
   private masterGain: GainNode | null = null;
   private filterNode: BiquadFilterNode | null = null;
+  private analyserNode: AnalyserNode | null = null;
 
   private initContext() {
     if (!this.ctx) {
@@ -52,8 +67,13 @@ class AudioSynthesizerEngine {
       this.filterNode.frequency.setValueAtTime(3200, this.ctx.currentTime);
       this.filterNode.Q.setValueAtTime(1.5, this.ctx.currentTime);
 
+      this.analyserNode = this.ctx.createAnalyser();
+      this.analyserNode.fftSize = 512;
+      this.analyserNode.smoothingTimeConstant = 0.75;
+
       this.filterNode.connect(this.masterGain);
-      this.masterGain.connect(this.ctx.destination);
+      this.masterGain.connect(this.analyserNode);
+      this.analyserNode.connect(this.ctx.destination);
     }
 
     if (this.ctx.state === 'suspended') {
@@ -61,14 +81,67 @@ class AudioSynthesizerEngine {
     }
   }
 
+  public getAnalyserNode(): AnalyserNode | null {
+    this.initContext();
+    return this.analyserNode;
+  }
+
+  public setOnActivePitches(cb: (pitches: number[]) => void) {
+    this.onActivePitchesCallback = cb;
+  }
+
   public setSequence(notes: MidiNote[], totalPpq: number, bpm: number) {
     this.currentNotes = [...notes];
     this.sequenceLengthPpq = Math.max(1, totalPpq);
-    this.tempoBpm = bpm;
+    this.tempoBpm = Math.min(320, Math.max(20, bpm));
+    this.isEffectiveDirty = true;
+  }
+
+  public setTempo(bpm: number) {
+    this.tempoBpm = Math.min(320, Math.max(20, bpm));
+  }
+
+  public getTempo(): number {
+    return this.tempoBpm;
   }
 
   public setParameters(params: PluginParameters) {
+    const prevArp = this.params.arpEnabled;
+    const prevMode = this.params.arpMode;
+    const prevRate = this.params.arpRate;
+    const prevOct = this.params.arpOctaves;
+    const prevGate = this.params.arpGate;
+
     this.params = { ...params };
+
+    if (
+      prevArp !== params.arpEnabled ||
+      prevMode !== params.arpMode ||
+      prevRate !== params.arpRate ||
+      prevOct !== params.arpOctaves ||
+      prevGate !== params.arpGate
+    ) {
+      this.isEffectiveDirty = true;
+    }
+  }
+
+  private getEffectiveNotes(): MidiNote[] {
+    if (!this.isEffectiveDirty) {
+      return this.effectiveNotes;
+    }
+
+    if (this.params.arpEnabled) {
+      this.effectiveNotes = arpeggiateNotes(this.currentNotes, this.sequenceLengthPpq, {
+        mode: this.params.arpMode,
+        rate: this.params.arpRate,
+        octaves: this.params.arpOctaves,
+        gate: this.params.arpGate,
+      });
+    } else {
+      this.effectiveNotes = [...this.currentNotes];
+    }
+    this.isEffectiveDirty = false;
+    return this.effectiveNotes;
   }
 
   public setOnPlayheadUpdate(cb: (ppq: number) => void) {
@@ -104,6 +177,7 @@ class AudioSynthesizerEngine {
     this.pause();
     this.currentPpq = 0;
     if (this.onPlayheadCallback) this.onPlayheadCallback(0);
+    this.notifyActivePitches();
   }
 
   public seek(ppq: number) {
@@ -118,6 +192,18 @@ class AudioSynthesizerEngine {
 
   public getCurrentPpq(): number {
     return this.currentPpq;
+  }
+
+  public auditionNote(pitch: number, velocity: number = 0.75, durationSeconds: number = 0.35) {
+    this.initContext();
+    this.playSynthesizerVoice({
+      id: -999,
+      pitch,
+      startPpq: 0,
+      durationPpq: (durationSeconds * (this.tempoBpm || 120)) / 60,
+      velocity,
+      channel: 1,
+    });
   }
 
   private tickLoop = () => {
@@ -160,7 +246,8 @@ class AudioSynthesizerEngine {
   };
 
   private triggerNotesInRange(startPpq: number, endPpq: number) {
-    for (const note of this.currentNotes) {
+    const notesToPlay = this.getEffectiveNotes();
+    for (const note of notesToPlay) {
       if (note.startPpq >= startPpq && note.startPpq < endPpq) {
         this.playSynthesizerVoice(note);
       }
@@ -214,8 +301,13 @@ class AudioSynthesizerEngine {
     osc1.stop(stopTime + release + 0.05);
     osc2.stop(stopTime + release + 0.05);
 
+    const voiceIdKey = `${note.id}-${now}-${Math.random()}`;
+    this.soundingPitchesMap.set(voiceIdKey, transposedPitch);
+    this.notifyActivePitches();
+
     const voiceEntry = {
       noteId: note.id,
+      pitch: transposedPitch,
       stop: () => {
         try {
           voiceGain.gain.cancelScheduledValues(this.ctx!.currentTime);
@@ -233,7 +325,16 @@ class AudioSynthesizerEngine {
 
     setTimeout(() => {
       this.activeVoices = this.activeVoices.filter((v) => v !== voiceEntry);
-    }, (durationSeconds + release + 0.1) * 1000);
+      this.soundingPitchesMap.delete(voiceIdKey);
+      this.notifyActivePitches();
+    }, (durationSeconds + release + 0.05) * 1000);
+  }
+
+  private notifyActivePitches() {
+    if (this.onActivePitchesCallback) {
+      const uniquePitches = Array.from(new Set(this.soundingPitchesMap.values()));
+      this.onActivePitchesCallback(uniquePitches);
+    }
   }
 
   private killAllVoices() {
@@ -241,6 +342,8 @@ class AudioSynthesizerEngine {
       v.stop();
     }
     this.activeVoices = [];
+    this.soundingPitchesMap.clear();
+    this.notifyActivePitches();
   }
 }
 

@@ -53,6 +53,8 @@ private:
     juce::ComboBox syncModeSelector;
     juce::Label transportStatusLabel;
     juce::Label bpmDisplayLabel;
+    juce::Slider manualTempoSlider;
+    juce::Label manualTempoLabel;
 
     // Scale & Quantize Controls
     juce::ComboBox scaleRootSelector;
@@ -125,6 +127,7 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> velocityOffsetAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> syncModeAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> loopAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> manualTempoAttachment;
 
     bool isDraggingExternalFile { false };
     float currentZoomX { 1.0f };

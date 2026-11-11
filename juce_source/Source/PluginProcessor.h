@@ -92,6 +92,7 @@ public:
     static constexpr const char* paramVelocityOffset = "velocityOffset";
     static constexpr const char* paramSyncMode       = "syncMode";
     static constexpr const char* paramLoop           = "loop";
+    static constexpr const char* paramManualTempo    = "manualTempo";
 
 private:
     void handleIncomingCommands();
@@ -130,6 +131,7 @@ private:
     std::atomic<float>* velocityOffsetParam { nullptr };
     std::atomic<float>* syncModeParam { nullptr };
     std::atomic<float>* loopParam { nullptr };
+    std::atomic<float>* manualTempoParam { nullptr };
 
     double sampleRate { 44100.0 };
     double lastPpqPosition { 0.0 };

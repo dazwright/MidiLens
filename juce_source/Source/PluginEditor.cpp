@@ -278,6 +278,8 @@ MidiPreviewerAudioProcessorEditor::MidiPreviewerAudioProcessorEditor(MidiPreview
         audioProcessor.apvts, MidiPreviewerAudioProcessor::paramSyncMode, syncModeSelector);
     loopAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
         audioProcessor.apvts, MidiPreviewerAudioProcessor::paramLoop, loopButton);
+    manualTempoAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+        audioProcessor.apvts, MidiPreviewerAudioProcessor::paramManualTempo, manualTempoSlider);
 
     if (audioProcessor.getSequenceSnapshot() == nullptr)
         loadEmbeddedDemoGroove();
@@ -335,6 +337,13 @@ void MidiPreviewerAudioProcessorEditor::setupCustomStyling()
     addAndMakeVisible(bpmDisplayLabel);
     bpmDisplayLabel.setFont(juce::FontOptions(12.0f).withStyle("Bold"));
     bpmDisplayLabel.setColour(juce::Label::textColourId, juce::Colour(0xfff59e0b));
+
+    addAndMakeVisible(manualTempoSlider);
+    manualTempoSlider.setSliderStyle(juce::Slider::IncDecButtons);
+    manualTempoSlider.setTextBoxStyle(juce::Slider::TextBoxLeft, false, 55, 20);
+    manualTempoSlider.setRange(30.0, 300.0, 1.0);
+    manualTempoSlider.setTextValueSuffix(" BPM");
+    manualTempoSlider.setTooltip("Manual Tempo (Active when not synced to DAW)");
 
     // Scale Controls
     addAndMakeVisible(scaleRootSelector);
@@ -470,12 +479,14 @@ void MidiPreviewerAudioProcessorEditor::resized()
     auto toolbar1 = area.removeFromTop(32);
     playButton.setBounds(toolbar1.removeFromLeft(50).reduced(2));
     stopButton.setBounds(toolbar1.removeFromLeft(50).reduced(2));
-    loopButton.setBounds(toolbar1.removeFromLeft(60).reduced(2));
-    syncModeSelector.setBounds(toolbar1.removeFromLeft(145).reduced(2));
+    loopButton.setBounds(toolbar1.removeFromLeft(55).reduced(2));
+    syncModeSelector.setBounds(toolbar1.removeFromLeft(125).reduced(2));
+    manualTempoSlider.setBounds(toolbar1.removeFromLeft(90).reduced(2));
 
-    toolbar1.removeFromLeft(10);
+    toolbar1.removeFromLeft(8);
     quantizeGridSelector.setBounds(toolbar1.removeFromLeft(90).reduced(2));
     quantizeTimeButton.setBounds(toolbar1.removeFromLeft(95).reduced(2));
+    keyDetectionBadge.setBounds(toolbar1.removeFromLeft(110).reduced(2)); // Orig key badge next to Grid box
 
     toolbar1.removeFromLeft(10);
     scaleRootSelector.setBounds(toolbar1.removeFromLeft(50).reduced(2));
@@ -483,12 +494,9 @@ void MidiPreviewerAudioProcessorEditor::resized()
     scaleLockToggle.setBounds(toolbar1.removeFromLeft(90).reduced(2));
     quantizeScaleButton.setBounds(toolbar1.removeFromLeft(95).reduced(2));
 
-    humanizeButton.setBounds(toolbar1.removeFromLeft(80).reduced(2));
-    humanizeRangeSlider.setBounds(toolbar1.removeFromLeft(100).reduced(2));
-
     area.removeFromTop(4);
 
-    // Toolbar Row 2: Zoom & Length Controls + Sync to Project Key & Target Key
+    // Toolbar Row 2: Zoom & Length Controls + Sync to Project Key + Target Key & Humanize
     auto toolbar2 = area.removeFromTop(28);
     doubleLengthButton.setBounds(toolbar2.removeFromLeft(75).reduced(2));
     halveLengthButton.setBounds(toolbar2.removeFromLeft(75).reduced(2));
@@ -508,7 +516,9 @@ void MidiPreviewerAudioProcessorEditor::resized()
     matchTargetKeyButton.setBounds(toolbar2.removeFromLeft(115).reduced(1));
 
     toolbar2.removeFromLeft(10);
-    keyDetectionBadge.setBounds(toolbar2.removeFromLeft(110).reduced(2));
+    // Humanize Controls next to Target Box
+    humanizeButton.setBounds(toolbar2.removeFromLeft(80).reduced(2));
+    humanizeRangeSlider.setBounds(toolbar2.removeFromLeft(100).reduced(2));
 
     area.removeFromTop(6);
 
@@ -577,8 +587,19 @@ void MidiPreviewerAudioProcessorEditor::timerCallback()
     pianoRoll.setPlayheadPositionPpq(ppq);
     pianoRoll.setTransposeOffset(static_cast<int>(transposeSlider.getValue()));
 
-    double hostBpm = audioProcessor.getHostBpm();
-    bpmDisplayLabel.setText(juce::String(hostBpm, 1) + " BPM", juce::dontSendNotification);
+    const int syncMode = syncModeSelector.getSelectedId() - 1; // 0 = Follow DAW, 1 = Free Audition
+    if (syncMode == 0)
+    {
+        double hostBpm = audioProcessor.getHostBpm();
+        bpmDisplayLabel.setText(juce::String(hostBpm, 1) + " BPM (DAW)", juce::dontSendNotification);
+        manualTempoSlider.setEnabled(false);
+    }
+    else
+    {
+        double manualBpm = manualTempoSlider.getValue();
+        bpmDisplayLabel.setText(juce::String(manualBpm, 0) + " BPM", juce::dontSendNotification);
+        manualTempoSlider.setEnabled(true);
+    }
 
     bool isPlaying = audioProcessor.isAudioPlaying() || audioProcessor.isHostPlaying();
     transportStatusLabel.setText(isPlaying ? "PLAYING" : "STOPPED", juce::dontSendNotification);

@@ -1,4 +1,5 @@
-import { ScaleType, QuantizeGrid, PluginParameters } from './types';
+import { ScaleType, QuantizeGrid, PluginParameters, MidiSequence } from './types';
+import { PRESET_SEQUENCES } from './midiParser';
 
 export interface PresetSettings {
   scaleRoot: number;
@@ -25,6 +26,7 @@ export interface MidiLensPreset {
   isFavorite?: boolean;
   createdAt?: string;
   settings: PresetSettings;
+  sequence?: MidiSequence;
 }
 
 export const DEFAULT_PRESET_SETTINGS: PresetSettings = {
@@ -48,8 +50,9 @@ export const FACTORY_PRESETS: MidiLensPreset[] = [
     id: 'factory_neo_soul',
     name: 'Neo-Soul Smooth Minor',
     category: 'Factory',
-    description: 'Natural minor scale lock with soft velocity jitter and 1/16th swing timing.',
+    description: 'Lush Cm9/Fm9/Bb13 jazz voicings with soft velocity jitter and 1/16th swing.',
     isFactory: true,
+    sequence: PRESET_SEQUENCES[0],
     settings: {
       ...DEFAULT_PRESET_SETTINGS,
       scaleRoot: 0, // C
@@ -65,14 +68,15 @@ export const FACTORY_PRESETS: MidiLensPreset[] = [
   },
   {
     id: 'factory_lofi_hiphop',
-    name: 'Lo-Fi Loose Swing',
+    name: 'Lo-Fi Loose Swing (F Major)',
     category: 'Groove',
-    description: 'Pentatonic minor with high velocity jitter and micro-timing displacement.',
+    description: 'Warm nostalgic 7th/9th chord progression with relaxed loose strums in F Major.',
     isFactory: true,
+    sequence: PRESET_SEQUENCES[1],
     settings: {
       ...DEFAULT_PRESET_SETTINGS,
-      scaleRoot: 0,
-      scaleType: 'pentatonic_minor',
+      scaleRoot: 5, // F
+      scaleType: 'major',
       scaleLock: true,
       quantizeGrid: '1/8T',
       quantizeStrength: 60,
@@ -84,13 +88,14 @@ export const FACTORY_PRESETS: MidiLensPreset[] = [
   },
   {
     id: 'factory_trap_bounce',
-    name: 'Trap Hard Grid 1/32',
+    name: 'Trap Dark Bells (D Minor)',
     category: 'Genre',
-    description: 'Rigid 1/32nd quantization grid with high velocity scale for hard bounces.',
+    description: 'Sinister D Minor bell melody with rapid 1/32 roll flourishes and 808 bass foundation.',
     isFactory: true,
+    sequence: PRESET_SEQUENCES[2],
     settings: {
       ...DEFAULT_PRESET_SETTINGS,
-      scaleRoot: 1, // C#
+      scaleRoot: 2, // D
       scaleType: 'minor',
       scaleLock: true,
       quantizeGrid: '1/32',
@@ -103,14 +108,15 @@ export const FACTORY_PRESETS: MidiLensPreset[] = [
   },
   {
     id: 'factory_house_driving',
-    name: 'House Driving 1/16 Beat',
+    name: 'House Driving Stabs (G Minor)',
     category: 'Genre',
-    description: 'Dorian mode with tight 1/16th grid and punchy velocity dynamics.',
+    description: 'Punchy 90s classic house chord stabs with syncopated 1/16th off-beat bounce in G Minor.',
     isFactory: true,
+    sequence: PRESET_SEQUENCES[3],
     settings: {
       ...DEFAULT_PRESET_SETTINGS,
-      scaleRoot: 2, // D
-      scaleType: 'dorian',
+      scaleRoot: 7, // G
+      scaleType: 'minor',
       scaleLock: true,
       quantizeGrid: '1/16',
       quantizeStrength: 100,
@@ -122,14 +128,15 @@ export const FACTORY_PRESETS: MidiLensPreset[] = [
   },
   {
     id: 'factory_cinematic_epic',
-    name: 'Cinematic Epic Major',
+    name: 'Cinematic Epic Major (D Major)',
     category: 'Factory',
-    description: 'Lydian mode with wide velocity scaling and full octave transposition.',
+    description: 'Soaring orchestral chord movements in D Major with wide octave voicings and add9 harmony.',
     isFactory: true,
+    sequence: PRESET_SEQUENCES[4],
     settings: {
       ...DEFAULT_PRESET_SETTINGS,
-      scaleRoot: 5, // F
-      scaleType: 'lydian',
+      scaleRoot: 2, // D
+      scaleType: 'major',
       scaleLock: true,
       quantizeGrid: '1/8',
       quantizeStrength: 90,
@@ -141,10 +148,11 @@ export const FACTORY_PRESETS: MidiLensPreset[] = [
   },
   {
     id: 'factory_jazz_blues',
-    name: 'Jazz Blues Chromatic',
+    name: 'Jazz Blues Turnaround (Bb)',
     category: 'Groove',
-    description: 'Blues scale with scale lock off for passing chromatic lead runs.',
+    description: 'Soulful swing progression in Bb with rootless 13th, 9th, and chromatic passing notes.',
     isFactory: true,
+    sequence: PRESET_SEQUENCES[5],
     settings: {
       ...DEFAULT_PRESET_SETTINGS,
       scaleRoot: 10, // Bb
@@ -156,6 +164,86 @@ export const FACTORY_PRESETS: MidiLensPreset[] = [
       randomMinVel: 40,
       randomMaxVel: 115,
       humanizeTimingAmount: 0.04,
+    },
+  },
+  {
+    id: 'factory_synthwave',
+    name: 'Synthwave Cyber Arp (A Minor)',
+    category: 'Genre',
+    description: 'High-energy rolling 16th-note arpeggiated electronic lead in A Minor with bass octaves.',
+    isFactory: true,
+    sequence: PRESET_SEQUENCES[6],
+    settings: {
+      ...DEFAULT_PRESET_SETTINGS,
+      scaleRoot: 9, // A
+      scaleType: 'minor',
+      scaleLock: true,
+      quantizeGrid: '1/16',
+      quantizeStrength: 100,
+      humanizeVelRange: 10,
+      randomMinVel: 75,
+      randomMaxVel: 120,
+      humanizeTimingAmount: 0.01,
+    },
+  },
+  {
+    id: 'factory_flamenco',
+    name: 'Flamenco Descent (A Phrygian)',
+    category: 'Groove',
+    description: 'Dramatic Andalusian descent (Am - G - F - E) with exotic Phrygian dominant tension.',
+    isFactory: true,
+    sequence: PRESET_SEQUENCES[7],
+    settings: {
+      ...DEFAULT_PRESET_SETTINGS,
+      scaleRoot: 9, // A
+      scaleType: 'phrygian',
+      scaleLock: true,
+      quantizeGrid: '1/16',
+      quantizeStrength: 85,
+      humanizeVelRange: 20,
+      randomMinVel: 45,
+      randomMaxVel: 120,
+      humanizeTimingAmount: 0.03,
+    },
+  },
+  {
+    id: 'factory_funk_clav',
+    name: 'Funk Clavinet Groove (E Dorian)',
+    category: 'Groove',
+    description: 'Syncopated funk riffs with octave bass slaps and crisp 16th-note chord stabs in E Dorian.',
+    isFactory: true,
+    sequence: PRESET_SEQUENCES[8],
+    settings: {
+      ...DEFAULT_PRESET_SETTINGS,
+      scaleRoot: 4, // E
+      scaleType: 'dorian',
+      scaleLock: true,
+      quantizeGrid: '1/16',
+      quantizeStrength: 90,
+      humanizeVelRange: 16,
+      randomMinVel: 60,
+      randomMaxVel: 122,
+      humanizeTimingAmount: 0.02,
+    },
+  },
+  {
+    id: 'factory_afrobeats',
+    name: 'Afrobeats R&B Wave (F# Minor)',
+    category: 'Genre',
+    description: 'Sweet interlocking syncopated chords and melodic bounce in F# Minor.',
+    isFactory: true,
+    sequence: PRESET_SEQUENCES[9],
+    settings: {
+      ...DEFAULT_PRESET_SETTINGS,
+      scaleRoot: 6, // F#
+      scaleType: 'minor',
+      scaleLock: true,
+      quantizeGrid: '1/16',
+      quantizeStrength: 80,
+      humanizeVelRange: 18,
+      randomMinVel: 55,
+      randomMaxVel: 115,
+      humanizeTimingAmount: 0.03,
     },
   },
 ];

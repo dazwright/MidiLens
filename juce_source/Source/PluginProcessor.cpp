@@ -16,6 +16,7 @@ MidiPreviewerAudioProcessor::MidiPreviewerAudioProcessor()
     velocityOffsetParam = apvts.getRawParameterValue(paramVelocityOffset);
     syncModeParam       = apvts.getRawParameterValue(paramSyncMode);
     loopParam           = apvts.getRawParameterValue(paramLoop);
+    manualTempoParam    = apvts.getRawParameterValue(paramManualTempo);
 }
 
 MidiPreviewerAudioProcessor::~MidiPreviewerAudioProcessor() = default;
@@ -56,6 +57,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout MidiPreviewerAudioProcessor:
         juce::ParameterID { paramLoop, 1 },
         "Loop",
         true));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID { paramManualTempo, 1 },
+        "Manual Tempo",
+        juce::NormalisableRange<float>(30.0f, 300.0f, 1.0f),
+        120.0f));
 
     return { params.begin(), params.end() };
 }
@@ -216,7 +223,10 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& /*buffe
             return;
         }
 
-        double ppqPerSample = (currentBpm / (60.0 * sampleRate)) * speedMultiplier;
+        const float manualBpm = manualTempoParam != nullptr ? manualTempoParam->load(std::memory_order_relaxed) : 120.0f;
+        const double auditionBpm = manualBpm > 20.0f ? static_cast<double>(manualBpm) : currentBpm;
+
+        double ppqPerSample = (auditionBpm / (60.0 * sampleRate)) * speedMultiplier;
         double blockPpqSpan = ppqPerSample * numSamples;
 
         startPpq = currentPlayheadPpq.load(std::memory_order_relaxed);
