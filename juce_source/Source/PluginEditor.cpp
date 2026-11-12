@@ -368,13 +368,18 @@ void MidiPreviewerAudioProcessorEditor::setupCustomStyling()
     presetLabel.setColour(juce::Label::textColourId, juce::Colour(0xff94a3b8));
 
     addAndMakeVisible(presetSelector);
-    presetSelector.addItem("1. Neo-Soul Groove (C Min)", 1);
-    presetSelector.addItem("2. Synthwave Bass (F Min)", 2);
-    presetSelector.addItem("3. Lofi Chords (Eb Maj)", 3);
-    presetSelector.addItem("4. Acid 303 Riff (D Min)", 4);
-    presetSelector.addItem("5. Funk Clavinet (A Min)", 5);
-    presetSelector.addItem("6. Jazz 2-5-1 (C Maj)", 6);
-    presetSelector.addItem("7. Pop Ballad (G Maj)", 7);
+    presetSelector.addItem("1. Ambient Ethereal Wash (Eb Maj)", 1);
+    presetSelector.addItem("2. Dark Ambient Drone (C Phryg)", 2);
+    presetSelector.addItem("3. Synthwave Outrun Bass (F Min)", 3);
+    presetSelector.addItem("4. Synthwave Cyber Arp (A Min)", 4);
+    presetSelector.addItem("5. Deep House Velvet (A Min)", 5);
+    presetSelector.addItem("6. Chicago House Stabs (C Min)", 6);
+    presetSelector.addItem("7. Berlin Hypnotic Techno (C Min)", 7);
+    presetSelector.addItem("8. Acid 303 Squelch (D Min)", 8);
+    presetSelector.addItem("9. Neo-Soul Silk Chords (C Min)", 9);
+    presetSelector.addItem("10. Lo-Fi Chill Hop (F Maj)", 10);
+    presetSelector.addItem("11. Cinematic Epic (D Maj)", 11);
+    presetSelector.addItem("12. Funk Clavinet (E Dorian)", 12);
     presetSelector.setSelectedId(1, juce::dontSendNotification);
 
     // Library & Files (Line 2)
@@ -975,69 +980,129 @@ void MidiPreviewerAudioProcessorEditor::loadPresetByIndex(int index)
 
     switch (index)
     {
-        case 1: // Neo-Soul Groove (C Minor)
-            snap->sequenceName = "Neo-Soul Groove (C Minor)";
-            snap->nativeBpm = 110.0;
+        case 1: // Ambient Ethereal Wash (Eb Major)
+            snap->sequenceName = "Ambient Ethereal Wash (Eb Major)";
+            snap->nativeBpm = 68.0;
+            addChord(0.0, 3.8, { 39, 51, 58, 62, 65, 70 }, 0.65f); // Ebmaj9
+            addChord(4.0, 3.8, { 32, 48, 55, 60, 63, 67 }, 0.68f); // Abmaj7
+            addChord(8.0, 3.8, { 36, 48, 55, 58, 63, 65 }, 0.66f); // Cm11
+            addChord(12.0, 3.8, { 29, 48, 53, 56, 60, 67 }, 0.70f); // Fm9
+            break;
+
+        case 2: // Dark Ambient Drone (C Phrygian)
+            snap->sequenceName = "Dark Ambient Drone (C Phrygian)";
+            snap->nativeBpm = 58.0;
+            addChord(0.0, 15.8, { 24, 36 }, 0.88f); // C0/C1 Sub Drone
+            addChord(2.0, 5.8, { 49 }, 0.72f);      // Db2 b2 tension
+            addChord(6.0, 9.8, { 56 }, 0.75f);      // Ab2 b6 tension
+            addChord(10.0, 5.8, { 62 }, 0.82f);     // D3
+            addChord(14.0, 1.8, { 71 }, 0.88f);     // B3
+            break;
+
+        case 3: // Synthwave Outrun Bass (F Minor)
+            snap->sequenceName = "Synthwave Outrun Bass (F Minor)";
+            snap->nativeBpm = 124.0;
+            for (int step = 0; step < 16; ++step)
+            {
+                int p1 = (step < 4) ? 29 : (step < 8) ? 27 : (step < 12) ? 25 : 24;
+                int p2 = p1 + 12;
+                addChord(step * 1.0, 0.22, { p1 }, 0.95f);
+                addChord(step * 1.0 + 0.25, 0.22, { p2 }, 0.82f);
+            }
+            break;
+
+        case 4: // Synthwave Cyber Arp (A Minor)
+            snap->sequenceName = "Synthwave Cyber Arp (A Minor)";
+            snap->nativeBpm = 128.0;
+            addChord(0.0, 3.8, { 33 }, 0.95f); // A1
+            {
+                std::vector<int> arp = { 57, 60, 64, 69, 64, 60, 57, 64, 69, 72, 69, 64, 60, 57, 60, 64 };
+                for (size_t i = 0; i < arp.size(); ++i)
+                    addChord(i * 0.25, 0.22, { arp[i] }, 0.85f);
+            }
+            break;
+
+        case 5: // Deep House Velvet (A Minor)
+            snap->sequenceName = "Deep House Velvet (A Minor)";
+            snap->nativeBpm = 122.0;
+            addChord(0.0, 0.8, { 33, 57, 60, 64, 67, 71 }, 0.90f); // Am9
+            addChord(1.5, 0.8, { 57, 60, 64, 67, 71 }, 0.84f);
+            addChord(2.75, 1.0, { 57, 60, 64, 67, 71 }, 0.88f);
+            addChord(4.0, 0.8, { 38, 57, 60, 65, 69, 72 }, 0.88f); // Dm9
+            addChord(8.0, 0.8, { 40, 59, 62, 67, 71, 74 }, 0.90f); // Em9
+            addChord(12.0, 1.8, { 41, 60, 64, 67, 72 }, 0.91f);    // Fmaj7
+            addChord(14.0, 1.8, { 40, 58, 62, 68 }, 0.93f);       // E7alt
+            break;
+
+        case 6: // Chicago House Stabs (C Minor)
+            snap->sequenceName = "Chicago House Stabs (C Minor)";
+            snap->nativeBpm = 126.0;
+            addChord(0.0, 0.4, { 36, 60, 63, 67, 70 }, 0.92f); // Cm7
+            addChord(1.5, 0.4, { 60, 63, 67, 70 }, 0.85f);
+            addChord(2.75, 0.8, { 60, 63, 67, 70 }, 0.90f);
+            addChord(4.0, 0.4, { 41, 60, 63, 68, 72 }, 0.90f); // Fm7
+            addChord(8.0, 0.4, { 43, 62, 65, 68, 72 }, 0.92f); // Gm7
+            addChord(12.0, 0.4, { 32, 59, 63, 67, 70 }, 0.94f); // Abmaj7
+            break;
+
+        case 7: // Berlin Hypnotic Techno (C Minor)
+            snap->sequenceName = "Berlin Hypnotic Techno (C Minor)";
+            snap->nativeBpm = 132.0;
+            {
+                std::vector<int> tech = { 36, 48, 51, 36, 55, 48, 58, 51, 36, 60, 58, 55, 51, 48, 36, 48 };
+                for (size_t i = 0; i < tech.size(); ++i)
+                    addChord(i * 0.25, 0.22, { tech[i] }, (i % 4 == 0) ? 0.98f : 0.78f);
+            }
+            break;
+
+        case 8: // Acid 303 Squelch (D Minor)
+            snap->sequenceName = "Acid 303 Squelch (D Minor)";
+            snap->nativeBpm = 130.0;
+            {
+                std::vector<int> acid = { 38, 38, 50, 41, 38, 45, 53, 50, 38, 38, 57, 41, 38, 48, 55, 50 };
+                for (size_t i = 0; i < acid.size(); ++i)
+                    addChord(i * 0.25, 0.22, { acid[i] }, (i % 3 == 0) ? 0.98f : 0.75f);
+            }
+            break;
+
+        case 9: // Neo-Soul Silk Chords (C Minor)
+            snap->sequenceName = "Neo-Soul Silk Chords (C Minor)";
+            snap->nativeBpm = 104.0;
             addChord(0.0, 3.8, { 36, 63, 67, 70, 74 }, 0.75f); // Cm9
             addChord(4.0, 3.8, { 41, 63, 68, 72, 79 }, 0.78f); // Fm9
             addChord(8.0, 3.8, { 46, 62, 68, 72, 79 }, 0.82f); // Bb13
             addChord(12.0, 3.8, { 39, 62, 67, 70, 77 }, 0.74f); // Ebmaj9
             break;
 
-        case 2: // Synthwave Bassline (F Minor)
-            snap->sequenceName = "Synthwave Bassline (F Minor)";
-            snap->nativeBpm = 120.0;
-            for (int step = 0; step < 16; ++step)
-            {
-                int pitch = (step < 8) ? 41 : (step < 12) ? 44 : 39;
-                addChord(step * 1.0, 0.85, { pitch }, 0.88f);
-            }
+        case 10: // Lo-Fi Chill Hop (F Major)
+            snap->sequenceName = "Lo-Fi Chill Hop (F Major)";
+            snap->nativeBpm = 84.0;
+            addChord(0.0, 3.6, { 41, 57, 60, 64, 67 }, 0.72f); // Fmaj9
+            addChord(4.0, 3.6, { 38, 57, 60, 65, 69 }, 0.75f); // Dm9
+            addChord(8.0, 3.6, { 43, 58, 62, 65, 69 }, 0.74f); // Gm9
+            addChord(12.0, 3.6, { 36, 55, 58, 62, 65 }, 0.76f); // C9sus4
             break;
 
-        case 3: // Lofi Chords (Eb Major)
-            snap->sequenceName = "Lofi Chords (Eb Major)";
-            snap->nativeBpm = 85.0;
-            addChord(0.0, 3.6, { 39, 63, 67, 70, 74 }, 0.68f); // Ebmaj9
-            addChord(4.0, 3.6, { 36, 63, 67, 70, 75 }, 0.65f); // Cm9
-            addChord(8.0, 3.6, { 41, 65, 68, 72, 77 }, 0.70f); // Fm9
-            addChord(12.0, 3.6, { 46, 65, 68, 70, 75 }, 0.67f); // Bb7sus4
+        case 11: // Cinematic Epic (D Major)
+            snap->sequenceName = "Cinematic Epic (D Major)";
+            snap->nativeBpm = 96.0;
+            addChord(0.0, 3.8, { 38, 45, 50, 54, 57, 64 }, 0.88f); // D(add9)
+            addChord(4.0, 3.8, { 35, 42, 47, 50, 54, 57 }, 0.86f); // Bm7
+            addChord(8.0, 3.8, { 31, 38, 43, 47, 50, 57 }, 0.89f); // G(add9)
+            addChord(12.0, 3.8, { 33, 40, 45, 49, 52, 59 }, 0.91f); // A(sus4)
             break;
 
-        case 4: // Acid 303 Riff (D Minor)
-            snap->sequenceName = "Acid 303 Riff (D Minor)";
-            snap->nativeBpm = 128.0;
-            {
-                std::vector<int> riff = { 38, 50, 38, 41, 38, 50, 48, 45, 38, 50, 38, 41, 38, 53, 52, 50 };
-                for (size_t s = 0; s < riff.size(); ++s)
-                    addChord(static_cast<double>(s), 0.75, { riff[s] }, (s % 4 == 0) ? 0.95f : 0.75f);
-            }
-            break;
-
-        case 5: // Funk Clavinet (A Minor)
-            snap->sequenceName = "Funk Clavinet (A Minor)";
-            snap->nativeBpm = 105.0;
-            addChord(0.0, 1.8, { 45, 64, 67, 69 }, 0.85f);
-            addChord(2.0, 1.8, { 45, 64, 67, 71 }, 0.88f);
-            addChord(4.0, 1.8, { 43, 62, 65, 69 }, 0.82f);
-            addChord(6.0, 1.8, { 41, 60, 64, 67 }, 0.86f);
-            break;
-
-        case 6: // Jazz 2-5-1 (C Major)
-            snap->sequenceName = "Jazz 2-5-1 (C Major)";
-            snap->nativeBpm = 120.0;
-            addChord(0.0, 3.8, { 38, 65, 69, 72, 76 }, 0.72f); // Dm9
-            addChord(4.0, 3.8, { 43, 63, 67, 71, 74 }, 0.78f); // G7(b13)
-            addChord(8.0, 7.8, { 36, 64, 67, 71, 74 }, 0.70f); // Cmaj9
-            break;
-
-        case 7: // Pop Piano Ballad (G Major)
+        case 12: // Funk Clavinet (E Dorian)
         default:
-            snap->sequenceName = "Pop Piano Ballad (G Major)";
-            snap->nativeBpm = 76.0;
-            addChord(0.0, 3.8, { 43, 62, 67, 71 }, 0.75f); // G
-            addChord(4.0, 3.8, { 47, 62, 66, 71 }, 0.73f); // D/F#
-            addChord(8.0, 3.8, { 40, 59, 64, 67 }, 0.72f); // Em
-            addChord(12.0, 3.8, { 36, 60, 64, 67 }, 0.76f); // C
+            snap->sequenceName = "Funk Clavinet (E Dorian)";
+            snap->nativeBpm = 114.0;
+            addChord(0.0, 0.4, { 28 }, 0.95f);
+            addChord(0.75, 0.3, { 55, 62, 64 }, 0.88f);
+            addChord(4.0, 0.4, { 33 }, 0.92f);
+            addChord(4.75, 0.35, { 55, 61, 64, 69 }, 0.89f);
+            addChord(8.0, 0.4, { 35 }, 0.93f);
+            addChord(8.75, 0.35, { 57, 62, 66 }, 0.91f);
+            addChord(12.0, 0.4, { 28 }, 0.96f);
             break;
     }
 

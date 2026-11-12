@@ -394,6 +394,289 @@ export const PRESET_SEQUENCES: MidiSequence[] = [
       { id: 251, pitch: 69, startPpq: 14.25, durationPpq: 1.0, velocity: 0.92, channel: 1 }, // A4
     ],
   },
+  {
+    name: 'Ambient Ethereal Wash (Eb Major)',
+    bpm: 68,
+    timeSigNumerator: 4,
+    timeSigDenominator: 4,
+    totalLengthPpq: 16,
+    notes: [
+      // Bar 1: Ebmaj9 lush ambient pad
+      { id: 252, pitch: 39, startPpq: 0.0, durationPpq: 3.9, velocity: 0.65, channel: 1 }, // Eb2
+      { id: 253, pitch: 51, startPpq: 0.1, durationPpq: 3.8, velocity: 0.62, channel: 1 }, // Eb3
+      { id: 254, pitch: 58, startPpq: 0.2, durationPpq: 3.7, velocity: 0.68, channel: 1 }, // Bb3
+      { id: 255, pitch: 62, startPpq: 0.3, durationPpq: 3.6, velocity: 0.72, channel: 1 }, // D4
+      { id: 256, pitch: 65, startPpq: 0.4, durationPpq: 3.5, velocity: 0.75, channel: 1 }, // F4
+      { id: 257, pitch: 70, startPpq: 0.5, durationPpq: 3.4, velocity: 0.78, channel: 1 }, // Bb4
+      // Bar 2: Abmaj7(add9)
+      { id: 258, pitch: 32, startPpq: 4.0, durationPpq: 3.9, velocity: 0.68, channel: 1 }, // Ab1
+      { id: 259, pitch: 48, startPpq: 4.1, durationPpq: 3.8, velocity: 0.64, channel: 1 }, // C3
+      { id: 260, pitch: 55, startPpq: 4.2, durationPpq: 3.7, velocity: 0.7, channel: 1 },  // G3
+      { id: 261, pitch: 60, startPpq: 4.3, durationPpq: 3.6, velocity: 0.74, channel: 1 }, // C4
+      { id: 262, pitch: 63, startPpq: 4.4, durationPpq: 3.5, velocity: 0.76, channel: 1 }, // Eb4
+      { id: 263, pitch: 67, startPpq: 4.5, durationPpq: 3.4, velocity: 0.82, channel: 1 }, // G4
+      // Bar 3: Cm11
+      { id: 264, pitch: 36, startPpq: 8.0, durationPpq: 3.9, velocity: 0.66, channel: 1 }, // C2
+      { id: 265, pitch: 48, startPpq: 8.1, durationPpq: 3.8, velocity: 0.63, channel: 1 }, // C3
+      { id: 266, pitch: 55, startPpq: 8.2, durationPpq: 3.7, velocity: 0.69, channel: 1 }, // G3
+      { id: 267, pitch: 58, startPpq: 8.3, durationPpq: 3.6, velocity: 0.72, channel: 1 }, // Bb3
+      { id: 268, pitch: 63, startPpq: 8.4, durationPpq: 3.5, velocity: 0.76, channel: 1 }, // Eb4
+      { id: 269, pitch: 65, startPpq: 8.5, durationPpq: 3.4, velocity: 0.8, channel: 1 },  // F4 (11th)
+      // Bar 4: Fm9 -> Ebmaj9
+      { id: 270, pitch: 29, startPpq: 12.0, durationPpq: 3.9, velocity: 0.7, channel: 1 }, // F1
+      { id: 271, pitch: 48, startPpq: 12.1, durationPpq: 3.8, velocity: 0.65, channel: 1 }, // C3
+      { id: 272, pitch: 53, startPpq: 12.2, durationPpq: 3.7, velocity: 0.72, channel: 1 }, // F3
+      { id: 273, pitch: 56, startPpq: 12.3, durationPpq: 3.6, velocity: 0.75, channel: 1 }, // Ab3
+      { id: 274, pitch: 60, startPpq: 12.4, durationPpq: 3.5, velocity: 0.78, channel: 1 }, // C4
+      { id: 275, pitch: 67, startPpq: 12.5, durationPpq: 3.4, velocity: 0.84, channel: 1 }, // G4
+    ],
+  },
+  {
+    name: 'Dark Ambient Ominous Drone (C Phrygian)',
+    bpm: 58,
+    timeSigNumerator: 4,
+    timeSigDenominator: 4,
+    totalLengthPpq: 16,
+    notes: [
+      // Subterranean C pedal drone + dissonant b2/b6 cluster swells
+      { id: 276, pitch: 24, startPpq: 0.0, durationPpq: 15.8, velocity: 0.95, channel: 1 }, // C0 Sub
+      { id: 277, pitch: 36, startPpq: 0.0, durationPpq: 15.8, velocity: 0.8, channel: 1 },  // C1 Bass
+      { id: 278, pitch: 48, startPpq: 0.0, durationPpq: 7.8, velocity: 0.6, channel: 1 },   // C2
+      { id: 279, pitch: 49, startPpq: 2.0, durationPpq: 5.8, velocity: 0.72, channel: 1 },  // Db2 (b2 tension)
+      { id: 280, pitch: 55, startPpq: 4.0, durationPpq: 7.8, velocity: 0.68, channel: 1 },  // G2
+      { id: 281, pitch: 56, startPpq: 6.0, durationPpq: 9.8, velocity: 0.75, channel: 1 },  // Ab2 (b6 tension)
+      { id: 282, pitch: 61, startPpq: 8.0, durationPpq: 7.8, velocity: 0.78, channel: 1 },  // Db3
+      { id: 283, pitch: 62, startPpq: 10.0, durationPpq: 5.8, velocity: 0.82, channel: 1 }, // D3
+      { id: 284, pitch: 67, startPpq: 12.0, durationPpq: 3.8, velocity: 0.85, channel: 1 }, // G3
+      { id: 285, pitch: 71, startPpq: 14.0, durationPpq: 1.8, velocity: 0.88, channel: 1 }, // B3
+    ],
+  },
+  {
+    name: 'Synthwave Outrun Bassline (F Minor)',
+    bpm: 124,
+    timeSigNumerator: 4,
+    timeSigDenominator: 4,
+    totalLengthPpq: 16,
+    notes: [
+      // Driving 1/16th octaved saw bass line (F1/F2, Eb1/Eb2, Db1/Db2, C1/C2)
+      { id: 286, pitch: 29, startPpq: 0.0, durationPpq: 0.22, velocity: 0.95, channel: 1 },
+      { id: 287, pitch: 41, startPpq: 0.25, durationPpq: 0.22, velocity: 0.82, channel: 1 },
+      { id: 288, pitch: 29, startPpq: 0.5, durationPpq: 0.22, velocity: 0.88, channel: 1 },
+      { id: 289, pitch: 41, startPpq: 0.75, durationPpq: 0.22, velocity: 0.84, channel: 1 },
+      { id: 290, pitch: 29, startPpq: 1.0, durationPpq: 0.22, velocity: 0.92, channel: 1 },
+      { id: 291, pitch: 41, startPpq: 1.25, durationPpq: 0.22, velocity: 0.85, channel: 1 },
+      { id: 292, pitch: 29, startPpq: 1.5, durationPpq: 0.22, velocity: 0.89, channel: 1 },
+      { id: 293, pitch: 41, startPpq: 1.75, durationPpq: 0.22, velocity: 0.86, channel: 1 },
+      { id: 294, pitch: 29, startPpq: 2.0, durationPpq: 0.22, velocity: 0.94, channel: 1 },
+      { id: 295, pitch: 41, startPpq: 2.25, durationPpq: 0.22, velocity: 0.83, channel: 1 },
+      { id: 296, pitch: 29, startPpq: 2.5, durationPpq: 0.22, velocity: 0.88, channel: 1 },
+      { id: 297, pitch: 41, startPpq: 2.75, durationPpq: 0.22, velocity: 0.87, channel: 1 },
+      { id: 298, pitch: 29, startPpq: 3.0, durationPpq: 0.22, velocity: 0.96, channel: 1 },
+      { id: 299, pitch: 41, startPpq: 3.25, durationPpq: 0.22, velocity: 0.85, channel: 1 },
+      { id: 300, pitch: 29, startPpq: 3.5, durationPpq: 0.22, velocity: 0.9, channel: 1 },
+      { id: 301, pitch: 41, startPpq: 3.75, durationPpq: 0.22, velocity: 0.89, channel: 1 },
+
+      { id: 302, pitch: 27, startPpq: 4.0, durationPpq: 0.22, velocity: 0.95, channel: 1 },
+      { id: 303, pitch: 39, startPpq: 4.25, durationPpq: 0.22, velocity: 0.83, channel: 1 },
+      { id: 304, pitch: 27, startPpq: 4.5, durationPpq: 0.22, velocity: 0.89, channel: 1 },
+      { id: 305, pitch: 39, startPpq: 4.75, durationPpq: 0.22, velocity: 0.85, channel: 1 },
+      { id: 306, pitch: 27, startPpq: 5.0, durationPpq: 0.22, velocity: 0.92, channel: 1 },
+      { id: 307, pitch: 39, startPpq: 5.25, durationPpq: 0.22, velocity: 0.84, channel: 1 },
+      { id: 308, pitch: 27, startPpq: 5.5, durationPpq: 0.22, velocity: 0.88, channel: 1 },
+      { id: 309, pitch: 39, startPpq: 5.75, durationPpq: 0.22, velocity: 0.87, channel: 1 },
+      { id: 310, pitch: 27, startPpq: 6.0, durationPpq: 0.22, velocity: 0.94, channel: 1 },
+      { id: 311, pitch: 39, startPpq: 6.25, durationPpq: 0.22, velocity: 0.83, channel: 1 },
+      { id: 312, pitch: 27, startPpq: 6.5, durationPpq: 0.22, velocity: 0.88, channel: 1 },
+      { id: 313, pitch: 39, startPpq: 6.75, durationPpq: 0.22, velocity: 0.87, channel: 1 },
+      { id: 314, pitch: 27, startPpq: 7.0, durationPpq: 0.22, velocity: 0.96, channel: 1 },
+      { id: 315, pitch: 39, startPpq: 7.25, durationPpq: 0.22, velocity: 0.85, channel: 1 },
+      { id: 316, pitch: 27, startPpq: 7.5, durationPpq: 0.22, velocity: 0.9, channel: 1 },
+      { id: 317, pitch: 39, startPpq: 7.75, durationPpq: 0.22, velocity: 0.89, channel: 1 },
+
+      { id: 318, pitch: 25, startPpq: 8.0, durationPpq: 0.22, velocity: 0.95, channel: 1 },
+      { id: 319, pitch: 37, startPpq: 8.25, durationPpq: 0.22, velocity: 0.83, channel: 1 },
+      { id: 320, pitch: 25, startPpq: 8.5, durationPpq: 0.22, velocity: 0.89, channel: 1 },
+      { id: 321, pitch: 37, startPpq: 8.75, durationPpq: 0.22, velocity: 0.85, channel: 1 },
+      { id: 322, pitch: 25, startPpq: 9.0, durationPpq: 0.22, velocity: 0.92, channel: 1 },
+      { id: 323, pitch: 37, startPpq: 9.25, durationPpq: 0.22, velocity: 0.84, channel: 1 },
+      { id: 324, pitch: 25, startPpq: 9.5, durationPpq: 0.22, velocity: 0.88, channel: 1 },
+      { id: 325, pitch: 37, startPpq: 9.75, durationPpq: 0.22, velocity: 0.87, channel: 1 },
+      { id: 326, pitch: 25, startPpq: 10.0, durationPpq: 0.22, velocity: 0.94, channel: 1 },
+      { id: 327, pitch: 37, startPpq: 10.25, durationPpq: 0.22, velocity: 0.83, channel: 1 },
+      { id: 328, pitch: 25, startPpq: 10.5, durationPpq: 0.22, velocity: 0.88, channel: 1 },
+      { id: 329, pitch: 37, startPpq: 10.75, durationPpq: 0.22, velocity: 0.87, channel: 1 },
+      { id: 330, pitch: 25, startPpq: 11.0, durationPpq: 0.22, velocity: 0.96, channel: 1 },
+      { id: 331, pitch: 37, startPpq: 11.25, durationPpq: 0.22, velocity: 0.85, channel: 1 },
+      { id: 332, pitch: 25, startPpq: 11.5, durationPpq: 0.22, velocity: 0.9, channel: 1 },
+      { id: 333, pitch: 37, startPpq: 11.75, durationPpq: 0.22, velocity: 0.89, channel: 1 },
+
+      { id: 334, pitch: 24, startPpq: 12.0, durationPpq: 0.22, velocity: 0.95, channel: 1 },
+      { id: 335, pitch: 36, startPpq: 12.25, durationPpq: 0.22, velocity: 0.83, channel: 1 },
+      { id: 336, pitch: 24, startPpq: 12.5, durationPpq: 0.22, velocity: 0.89, channel: 1 },
+      { id: 337, pitch: 36, startPpq: 12.75, durationPpq: 0.22, velocity: 0.85, channel: 1 },
+      { id: 338, pitch: 24, startPpq: 13.0, durationPpq: 0.22, velocity: 0.92, channel: 1 },
+      { id: 339, pitch: 36, startPpq: 13.25, durationPpq: 0.22, velocity: 0.84, channel: 1 },
+      { id: 340, pitch: 24, startPpq: 13.5, durationPpq: 0.22, velocity: 0.88, channel: 1 },
+      { id: 341, pitch: 36, startPpq: 13.75, durationPpq: 0.22, velocity: 0.87, channel: 1 },
+      { id: 342, pitch: 24, startPpq: 14.0, durationPpq: 0.22, velocity: 0.94, channel: 1 },
+      { id: 343, pitch: 36, startPpq: 14.25, durationPpq: 0.22, velocity: 0.83, channel: 1 },
+      { id: 344, pitch: 24, startPpq: 14.5, durationPpq: 0.22, velocity: 0.88, channel: 1 },
+      { id: 345, pitch: 36, startPpq: 14.75, durationPpq: 0.22, velocity: 0.87, channel: 1 },
+      { id: 346, pitch: 24, startPpq: 15.0, durationPpq: 0.22, velocity: 0.96, channel: 1 },
+      { id: 347, pitch: 36, startPpq: 15.25, durationPpq: 0.22, velocity: 0.85, channel: 1 },
+      { id: 348, pitch: 24, startPpq: 15.5, durationPpq: 0.22, velocity: 0.9, channel: 1 },
+      { id: 349, pitch: 36, startPpq: 15.75, durationPpq: 0.22, velocity: 0.89, channel: 1 },
+    ],
+  },
+  {
+    name: 'Deep House Velvet Chords (A Minor)',
+    bpm: 122,
+    timeSigNumerator: 4,
+    timeSigDenominator: 4,
+    totalLengthPpq: 16,
+    notes: [
+      // Syncopated 90s Deep House Rhodes Chords (Am9, Dm9, Em9, Fmaj7)
+      { id: 350, pitch: 33, startPpq: 0.0, durationPpq: 0.8, velocity: 0.9, channel: 1 },  // A1
+      { id: 351, pitch: 57, startPpq: 0.0, durationPpq: 0.8, velocity: 0.8, channel: 1 },  // A3
+      { id: 352, pitch: 60, startPpq: 0.0, durationPpq: 0.8, velocity: 0.82, channel: 1 }, // C4
+      { id: 353, pitch: 64, startPpq: 0.0, durationPpq: 0.8, velocity: 0.85, channel: 1 }, // E4
+      { id: 354, pitch: 67, startPpq: 0.0, durationPpq: 0.8, velocity: 0.88, channel: 1 }, // G4
+      { id: 355, pitch: 71, startPpq: 0.0, durationPpq: 0.8, velocity: 0.92, channel: 1 }, // B4
+
+      { id: 356, pitch: 57, startPpq: 1.5, durationPpq: 0.8, velocity: 0.82, channel: 1 },
+      { id: 357, pitch: 60, startPpq: 1.5, durationPpq: 0.8, velocity: 0.84, channel: 1 },
+      { id: 358, pitch: 64, startPpq: 1.5, durationPpq: 0.8, velocity: 0.86, channel: 1 },
+      { id: 359, pitch: 67, startPpq: 1.5, durationPpq: 0.8, velocity: 0.89, channel: 1 },
+      { id: 360, pitch: 71, startPpq: 1.5, durationPpq: 0.8, velocity: 0.91, channel: 1 },
+
+      { id: 361, pitch: 57, startPpq: 2.75, durationPpq: 1.0, velocity: 0.85, channel: 1 },
+      { id: 362, pitch: 60, startPpq: 2.75, durationPpq: 1.0, velocity: 0.86, channel: 1 },
+      { id: 363, pitch: 64, startPpq: 2.75, durationPpq: 1.0, velocity: 0.88, channel: 1 },
+      { id: 364, pitch: 67, startPpq: 2.75, durationPpq: 1.0, velocity: 0.9, channel: 1 },
+      { id: 365, pitch: 71, startPpq: 2.75, durationPpq: 1.0, velocity: 0.93, channel: 1 },
+
+      { id: 366, pitch: 38, startPpq: 4.0, durationPpq: 0.8, velocity: 0.88, channel: 1 }, // D2
+      { id: 367, pitch: 57, startPpq: 4.0, durationPpq: 0.8, velocity: 0.81, channel: 1 },
+      { id: 368, pitch: 60, startPpq: 4.0, durationPpq: 0.8, velocity: 0.83, channel: 1 },
+      { id: 369, pitch: 65, startPpq: 4.0, durationPpq: 0.8, velocity: 0.86, channel: 1 },
+      { id: 370, pitch: 69, startPpq: 4.0, durationPpq: 0.8, velocity: 0.89, channel: 1 },
+
+      { id: 371, pitch: 57, startPpq: 5.5, durationPpq: 0.8, velocity: 0.82, channel: 1 },
+      { id: 372, pitch: 60, startPpq: 5.5, durationPpq: 0.8, velocity: 0.84, channel: 1 },
+      { id: 373, pitch: 65, startPpq: 5.5, durationPpq: 0.8, velocity: 0.87, channel: 1 },
+      { id: 374, pitch: 69, startPpq: 5.5, durationPpq: 0.8, velocity: 0.9, channel: 1 },
+
+      { id: 375, pitch: 40, startPpq: 8.0, durationPpq: 0.8, velocity: 0.9, channel: 1 },  // E2
+      { id: 376, pitch: 59, startPpq: 8.0, durationPpq: 0.8, velocity: 0.82, channel: 1 },
+      { id: 377, pitch: 62, startPpq: 8.0, durationPpq: 0.8, velocity: 0.84, channel: 1 },
+      { id: 378, pitch: 67, startPpq: 8.0, durationPpq: 0.8, velocity: 0.87, channel: 1 },
+      { id: 379, pitch: 71, startPpq: 8.0, durationPpq: 0.8, velocity: 0.9, channel: 1 },
+
+      { id: 380, pitch: 41, startPpq: 12.0, durationPpq: 1.8, velocity: 0.91, channel: 1 }, // F2
+      { id: 381, pitch: 60, startPpq: 12.0, durationPpq: 1.8, velocity: 0.84, channel: 1 },
+      { id: 382, pitch: 64, startPpq: 12.0, durationPpq: 1.8, velocity: 0.86, channel: 1 },
+      { id: 383, pitch: 67, startPpq: 12.0, durationPpq: 1.8, velocity: 0.89, channel: 1 },
+
+      { id: 384, pitch: 40, startPpq: 14.0, durationPpq: 1.8, velocity: 0.93, channel: 1 }, // E2
+      { id: 385, pitch: 58, startPpq: 14.0, durationPpq: 1.8, velocity: 0.85, channel: 1 },
+      { id: 386, pitch: 62, startPpq: 14.0, durationPpq: 1.8, velocity: 0.88, channel: 1 },
+      { id: 387, pitch: 68, startPpq: 14.0, durationPpq: 1.8, velocity: 0.92, channel: 1 },
+    ],
+  },
+  {
+    name: 'Berlin Hypnotic Techno Loop (C Minor)',
+    bpm: 132,
+    timeSigNumerator: 4,
+    timeSigDenominator: 4,
+    totalLengthPpq: 16,
+    notes: [
+      // Driving 132 BPM peak-hour techno synth loop in C Minor
+      { id: 388, pitch: 36, startPpq: 0.0, durationPpq: 0.22, velocity: 0.98, channel: 1 }, // C2 accent
+      { id: 389, pitch: 48, startPpq: 0.25, durationPpq: 0.22, velocity: 0.75, channel: 1 }, // C3
+      { id: 390, pitch: 51, startPpq: 0.5, durationPpq: 0.22, velocity: 0.88, channel: 1 },  // Eb3
+      { id: 391, pitch: 36, startPpq: 0.75, durationPpq: 0.22, velocity: 0.7, channel: 1 },
+      { id: 392, pitch: 55, startPpq: 1.0, durationPpq: 0.22, velocity: 0.94, channel: 1 },  // G3
+      { id: 393, pitch: 48, startPpq: 1.25, durationPpq: 0.22, velocity: 0.72, channel: 1 },
+      { id: 394, pitch: 58, startPpq: 1.5, durationPpq: 0.22, velocity: 0.86, channel: 1 },  // Bb3
+      { id: 395, pitch: 51, startPpq: 1.75, durationPpq: 0.22, velocity: 0.78, channel: 1 },
+      { id: 396, pitch: 36, startPpq: 2.0, durationPpq: 0.22, velocity: 0.96, channel: 1 },
+      { id: 397, pitch: 60, startPpq: 2.25, durationPpq: 0.22, velocity: 0.82, channel: 1 }, // C4
+      { id: 398, pitch: 58, startPpq: 2.5, durationPpq: 0.22, velocity: 0.85, channel: 1 },
+      { id: 399, pitch: 55, startPpq: 2.75, durationPpq: 0.22, velocity: 0.79, channel: 1 },
+      { id: 400, pitch: 51, startPpq: 3.0, durationPpq: 0.22, velocity: 0.92, channel: 1 },
+      { id: 401, pitch: 48, startPpq: 3.25, durationPpq: 0.22, velocity: 0.74, channel: 1 },
+
+      { id: 402, pitch: 39, startPpq: 4.0, durationPpq: 0.22, velocity: 0.98, channel: 1 }, // Eb2
+      { id: 403, pitch: 51, startPpq: 4.25, durationPpq: 0.22, velocity: 0.75, channel: 1 },
+      { id: 404, pitch: 55, startPpq: 4.5, durationPpq: 0.22, velocity: 0.88, channel: 1 },
+      { id: 405, pitch: 39, startPpq: 4.75, durationPpq: 0.22, velocity: 0.7, channel: 1 },
+      { id: 406, pitch: 58, startPpq: 5.0, durationPpq: 0.22, velocity: 0.94, channel: 1 },
+      { id: 407, pitch: 51, startPpq: 5.25, durationPpq: 0.22, velocity: 0.72, channel: 1 },
+      { id: 408, pitch: 62, startPpq: 5.5, durationPpq: 0.22, velocity: 0.86, channel: 1 }, // D4
+      { id: 409, pitch: 55, startPpq: 5.75, durationPpq: 0.22, velocity: 0.78, channel: 1 },
+
+      { id: 410, pitch: 41, startPpq: 8.0, durationPpq: 0.22, velocity: 0.98, channel: 1 }, // F2
+      { id: 411, pitch: 53, startPpq: 8.25, durationPpq: 0.22, velocity: 0.75, channel: 1 },
+      { id: 412, pitch: 56, startPpq: 8.5, durationPpq: 0.22, velocity: 0.88, channel: 1 },
+      { id: 413, pitch: 41, startPpq: 8.75, durationPpq: 0.22, velocity: 0.7, channel: 1 },
+      { id: 414, pitch: 60, startPpq: 9.0, durationPpq: 0.22, velocity: 0.94, channel: 1 },
+      { id: 415, pitch: 53, startPpq: 9.25, durationPpq: 0.22, velocity: 0.72, channel: 1 },
+      { id: 416, pitch: 65, startPpq: 9.5, durationPpq: 0.22, velocity: 0.86, channel: 1 }, // F4
+
+      { id: 417, pitch: 43, startPpq: 12.0, durationPpq: 0.22, velocity: 0.98, channel: 1 }, // G2
+      { id: 418, pitch: 55, startPpq: 12.25, durationPpq: 0.22, velocity: 0.75, channel: 1 },
+      { id: 419, pitch: 58, startPpq: 12.5, durationPpq: 0.22, velocity: 0.88, channel: 1 },
+      { id: 420, pitch: 43, startPpq: 12.75, durationPpq: 0.22, velocity: 0.7, channel: 1 },
+      { id: 421, pitch: 62, startPpq: 13.0, durationPpq: 0.22, velocity: 0.94, channel: 1 },
+      { id: 422, pitch: 55, startPpq: 13.25, durationPpq: 0.22, velocity: 0.72, channel: 1 },
+      { id: 423, pitch: 67, startPpq: 13.5, durationPpq: 0.22, velocity: 0.86, channel: 1 }, // G4
+    ],
+  },
+  {
+    name: 'Acid 303 Resonant Line (D Minor)',
+    bpm: 130,
+    timeSigNumerator: 4,
+    timeSigDenominator: 4,
+    totalLengthPpq: 16,
+    notes: [
+      // Iconic 303 squelch acid line in D Minor with slides & accents
+      { id: 424, pitch: 38, startPpq: 0.0, durationPpq: 0.45, velocity: 0.98, channel: 1 }, // D2 Accent
+      { id: 425, pitch: 38, startPpq: 0.5, durationPpq: 0.22, velocity: 0.65, channel: 1 }, // D2
+      { id: 426, pitch: 50, startPpq: 0.75, durationPpq: 0.45, velocity: 0.9, channel: 1 },  // D3 Accent slide
+      { id: 427, pitch: 41, startPpq: 1.25, durationPpq: 0.22, velocity: 0.7, channel: 1 },  // F2
+      { id: 428, pitch: 38, startPpq: 1.5, durationPpq: 0.45, velocity: 0.88, channel: 1 }, // D2
+      { id: 429, pitch: 45, startPpq: 2.0, durationPpq: 0.45, velocity: 0.92, channel: 1 }, // A2
+      { id: 430, pitch: 53, startPpq: 2.5, durationPpq: 0.45, velocity: 0.96, channel: 1 }, // F3 Accent slide
+      { id: 431, pitch: 50, startPpq: 3.0, durationPpq: 0.45, velocity: 0.84, channel: 1 }, // D3
+      { id: 432, pitch: 48, startPpq: 3.5, durationPpq: 0.45, velocity: 0.8, channel: 1 },  // C3
+
+      { id: 433, pitch: 38, startPpq: 4.0, durationPpq: 0.45, velocity: 0.98, channel: 1 },
+      { id: 434, pitch: 38, startPpq: 4.5, durationPpq: 0.22, velocity: 0.65, channel: 1 },
+      { id: 435, pitch: 57, startPpq: 4.75, durationPpq: 0.45, velocity: 0.92, channel: 1 }, // A3 Accent slide
+      { id: 436, pitch: 41, startPpq: 5.25, durationPpq: 0.22, velocity: 0.72, channel: 1 },
+      { id: 437, pitch: 38, startPpq: 5.5, durationPpq: 0.45, velocity: 0.88, channel: 1 },
+      { id: 438, pitch: 48, startPpq: 6.0, durationPpq: 0.45, velocity: 0.94, channel: 1 }, // C3
+      { id: 439, pitch: 55, startPpq: 6.5, durationPpq: 0.45, velocity: 0.96, channel: 1 }, // G3 Accent slide
+      { id: 440, pitch: 53, startPpq: 7.0, durationPpq: 0.45, velocity: 0.86, channel: 1 }, // F3
+      { id: 441, pitch: 50, startPpq: 7.5, durationPpq: 0.45, velocity: 0.82, channel: 1 }, // D3
+
+      { id: 442, pitch: 38, startPpq: 8.0, durationPpq: 0.45, velocity: 0.98, channel: 1 },
+      { id: 443, pitch: 38, startPpq: 8.5, durationPpq: 0.22, velocity: 0.65, channel: 1 },
+      { id: 444, pitch: 50, startPpq: 8.75, durationPpq: 0.45, velocity: 0.9, channel: 1 },
+      { id: 445, pitch: 41, startPpq: 9.25, durationPpq: 0.22, velocity: 0.7, channel: 1 },
+      { id: 446, pitch: 38, startPpq: 9.5, durationPpq: 0.45, velocity: 0.88, channel: 1 },
+      { id: 447, pitch: 45, startPpq: 10.0, durationPpq: 0.45, velocity: 0.92, channel: 1 },
+      { id: 448, pitch: 53, startPpq: 10.5, durationPpq: 0.45, velocity: 0.96, channel: 1 },
+      { id: 449, pitch: 50, startPpq: 11.0, durationPpq: 0.45, velocity: 0.84, channel: 1 },
+
+      { id: 450, pitch: 38, startPpq: 12.0, durationPpq: 0.45, velocity: 0.98, channel: 1 },
+      { id: 451, pitch: 50, startPpq: 12.5, durationPpq: 0.45, velocity: 0.95, channel: 1 },
+      { id: 452, pitch: 62, startPpq: 13.0, durationPpq: 0.45, velocity: 0.98, channel: 1 }, // D4 High Accent
+      { id: 453, pitch: 57, startPpq: 13.5, durationPpq: 0.45, velocity: 0.88, channel: 1 },
+      { id: 454, pitch: 53, startPpq: 14.0, durationPpq: 0.45, velocity: 0.9, channel: 1 },
+      { id: 455, pitch: 50, startPpq: 14.5, durationPpq: 0.45, velocity: 0.85, channel: 1 },
+    ],
+  },
 ];
 
 /**

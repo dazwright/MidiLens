@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { MidiSequence, PluginParameters, KeyResult, ScannedMidiFile, ScaleType, QuantizeGrid } from '../types';
 import { PRESET_SEQUENCES, parseMidiFile, serializeMidiFile } from '../midiParser';
 import { analyzeKeyFromNotes, calculateSemitoneOffsetToTarget, getNoteName } from '../keyDetection';
@@ -25,6 +25,7 @@ import { ChordVisualizer } from './ChordVisualizer';
 import { ArpeggiatorControls } from './ArpeggiatorControls';
 import { MidiExportModal } from './MidiExportModal';
 import { arpeggiateNotes } from '../arpUtils';
+import { LibraryModal } from './LibraryModal';
 import {
   Play,
   Pause,
@@ -1106,11 +1107,16 @@ export const PluginSimulator: React.FC = () => {
   const currentBeat = Math.floor((playheadPpq % barPpq) / beatPpq) + 1;
   const currentTick = Math.floor(((playheadPpq % beatPpq) / beatPpq) * 100);
 
-  const filteredScannedFiles = scannedFiles.filter(
-    (f) =>
-      f.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      f.relativePath.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const groupedScannedFiles: Record<string, { file: ScannedMidiFile; originalIndex: number }[]> = useMemo(() => {
+    const map: Record<string, { file: ScannedMidiFile; originalIndex: number }[]> = {};
+    scannedFiles.forEach((file, idx) => {
+      const parts = file.relativePath.split('/');
+      const folder = parts.length > 1 ? parts.slice(0, -1).join('/') : 'Root Folder';
+      if (!map[folder]) map[folder] = [];
+      map[folder].push({ file, originalIndex: idx });
+    });
+    return map;
+  }, [scannedFiles]);
 
   return (
     <div
@@ -1235,15 +1241,16 @@ export const PluginSimulator: React.FC = () => {
                   </optgroup>
                 )}
 
-                {scannedFiles.length > 0 && (
-                  <optgroup label={`📁 Scanned MIDI Files (${scannedFiles.length.toLocaleString()})`}>
-                    {scannedFiles.slice(0, 1000).map((f, idx) => (
-                      <option key={`scanned_${idx}`} value={`scanned_${idx}`} className="bg-[#121418] text-neutral-200">
-                        {idx + 1}. {f.name}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
+                {Object.keys(groupedScannedFiles).length > 0 &&
+                  Object.entries(groupedScannedFiles).slice(0, 100).map(([folderName, items]: [string, { file: ScannedMidiFile; originalIndex: number }[]]) => (
+                    <optgroup key={folderName} label={`📁 ${folderName} (${items.length})`}>
+                      {items.slice(0, 100).map(({ file, originalIndex }) => (
+                        <option key={`scanned_${originalIndex}`} value={`scanned_${originalIndex}`} className="bg-[#121418] text-neutral-200">
+                          {file.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
 
                 <optgroup label="🎵 Factory Grooves & Patterns">
                   {PRESET_SEQUENCES.map((p, idx) => (
@@ -2182,109 +2189,23 @@ export const PluginSimulator: React.FC = () => {
       )}
 
       {/* Scanned Folder Library Modal */}
-      {showFolderModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4 animate-in fade-in duration-150">
-          <div className="w-full max-w-2xl bg-[#1b1e2a] border border-slate-700/80 rounded-2xl overflow-hidden shadow-2xl flex flex-col max-h-[85vh]">
-            <div className="flex items-center justify-between px-5 py-3.5 bg-[#141722] border-b border-slate-800">
-              <div className="flex items-center gap-2">
-                <FolderSearch className="w-5 h-5 text-amber-400" />
-                <h3 className="font-bold text-sm text-white font-mono">
-                  SCANNED MIDI LIBRARY ({scannedFiles.length.toLocaleString()} files found)
-                </h3>
-              </div>
-              <button onClick={() => setShowFolderModal(false)} className="text-slate-400 hover:text-white p-1">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-3 bg-[#171a24] border-b border-slate-800 flex items-center gap-2">
-              <Search className="w-4 h-4 text-slate-500 shrink-0" />
-              <input
-                type="text"
-                placeholder="Search MIDI files or subfolders..."
-                value={searchQuery}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value);
-                  setVisibleLibraryCount(50);
-                }}
-                className="w-full bg-transparent text-xs font-mono text-slate-200 placeholder-slate-500 focus:outline-none"
-              />
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              {filteredScannedFiles.length === 0 ? (
-                <div className="p-8 text-center text-xs font-mono space-y-3">
-                  <div className="w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center mx-auto">
-                    <FolderSearch className="w-6 h-6" />
-                  </div>
-                  <p className="text-slate-300 font-semibold">
-                    {scannedFiles.length === 0
-                      ? 'No .mid or .midi files were found in the selected folder.'
-                      : `No MIDI files matching "${searchQuery}"`}
-                  </p>
-                  <p className="text-[11px] text-slate-500 max-w-md mx-auto leading-relaxed">
-                    Tip: When the browser dialog opens, click <strong className="text-amber-400">"Upload"</strong> or <strong className="text-amber-400">"Allow"</strong> when prompted to allow reading the folder and subfolders. You can also drag-and-drop any folder or <code className="text-sky-300">.mid</code> files directly into the window!
-                  </p>
-                </div>
-              ) : (
-                <>
-                  {filteredScannedFiles.slice(0, visibleLibraryCount).map((f, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => {
-                        const originalIdx = scannedFiles.findIndex((sf) => sf.relativePath === f.relativePath);
-                        setCurrentScannedFileIdx(originalIdx >= 0 ? originalIdx : idx);
-                        setActiveSourceType('scanned');
-                        pushHistorySnapshot(`Load ${f.name}`);
-                        loadMidiFromFile(f.file);
-                        setShowFolderModal(false);
-                        setNotificationBanner(`✓ Loaded "${f.name}"`);
-                        setTimeout(() => setNotificationBanner(null), 3500);
-                      }}
-                      className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-left text-xs font-mono bg-[#141722]/60 hover:bg-amber-500/10 hover:border-amber-500/30 border border-slate-800/80 transition group"
-                    >
-                      <div className="flex items-center gap-3 truncate">
-                        <FileMusic className="w-4 h-4 text-amber-400 group-hover:scale-110 shrink-0 transition-transform" />
-                        <div className="truncate">
-                          <span className="font-semibold text-slate-200 block truncate group-hover:text-amber-300 transition">
-                            {f.name}
-                          </span>
-                          <span className="text-[10px] text-slate-500 block truncate">{f.relativePath}</span>
-                        </div>
-                      </div>
-                      <span className="text-[10px] text-slate-500 shrink-0 ml-3 font-mono">
-                        {(f.sizeBytes / 1024).toFixed(1)} KB
-                      </span>
-                    </button>
-                  ))}
-
-                  {filteredScannedFiles.length > visibleLibraryCount && (
-                    <div className="p-3 text-center border-t border-slate-800/80 bg-[#141722]/40 rounded-xl mt-2 flex flex-col sm:flex-row items-center justify-between gap-2">
-                      <span className="text-[11px] font-mono text-slate-400">
-                        Showing {visibleLibraryCount} of {filteredScannedFiles.length} files
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => setVisibleLibraryCount((prev) => prev + 50)}
-                          className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-sky-300 font-mono text-xs font-semibold rounded-xl border border-slate-700 transition"
-                        >
-                          Show +50 More
-                        </button>
-                        <button
-                          onClick={() => setVisibleLibraryCount(filteredScannedFiles.length)}
-                          className="px-3.5 py-1.5 bg-sky-950/60 hover:bg-sky-900 text-sky-200 font-mono text-xs font-semibold rounded-xl border border-sky-700/50 transition"
-                        >
-                          Show All ({filteredScannedFiles.length})
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <LibraryModal
+        isOpen={showFolderModal}
+        onClose={() => setShowFolderModal(false)}
+        scannedFiles={scannedFiles}
+        onSelectFile={(scannedItem, originalIndex) => {
+          setCurrentScannedFileIdx(originalIndex);
+          setActiveSourceType('scanned');
+          pushHistorySnapshot(`Load ${scannedItem.name}`);
+          loadMidiFromFile(scannedItem.file);
+          setShowFolderModal(false);
+          setNotificationBanner(`✓ Loaded "${scannedItem.name}" into piano roll`);
+          setTimeout(() => setNotificationBanner(null), 3500);
+        }}
+        activeFileIndex={activeSourceType === 'scanned' ? currentScannedFileIdx : -1}
+        onScanFolderClick={handleScanFolderClick}
+        isScanning={isScanning}
+      />
     </div>
   );
 };
