@@ -1,6 +1,6 @@
 import { CodeFileEntry } from './types';
 
-// Read updated files
+// Native C++ JUCE 8 DSP & Host Bridge Sources
 import pianoRollH from '../juce_source/Source/PianoRollComponent.h?raw';
 import pianoRollCpp from '../juce_source/Source/PianoRollComponent.cpp?raw';
 import processorH from '../juce_source/Source/PluginProcessor.h?raw';
@@ -21,30 +21,60 @@ import chordDetectorH from '../juce_source/Source/ChordDetector.h?raw';
 import arpEngineH from '../juce_source/Source/ArpEngine.h?raw';
 import midiLensLookAndFeelH from '../juce_source/Source/MidiLensLookAndFeel.h?raw';
 
+// Pre-compiled Offline JUCE 8 WebUI Assets (Embedded into BinaryData via CMake)
+import webUiIndexHtml from '../juce_source/WebUI/index.html?raw';
+import webUiAppCss from '../juce_source/WebUI/app.css?raw';
+import webUiAppJs from '../juce_source/WebUI/app.js?raw';
+import webUiIconSvg from '../juce_source/WebUI/icon.svg?raw';
+
 export const JUCE_CODE_FILES: CodeFileEntry[] = [
   {
-    filename: 'MidiLensLookAndFeel.h',
-    path: 'Source/MidiLensLookAndFeel.h',
+    filename: 'PluginEditor.h',
+    path: 'Source/PluginEditor.h',
     language: 'cpp',
     category: 'GUI Canvas',
-    description: 'Custom Analog Hybrid Studio Rack JUCE LookAndFeel styling gunmetal chassis buttons, incandescent play indicators, dark stamped comboboxes, and milled rotary knobs.',
-    content: midiLensLookAndFeelH,
+    description: 'JUCE 8 WebBrowserComponent editor header with offline BinaryData ResourceProvider, native Finder dialogs, and DAW drag-and-drop.',
+    content: editorH,
   },
   {
-    filename: 'ChordDetector.h',
-    path: 'Source/ChordDetector.h',
+    filename: 'PluginEditor.cpp',
+    path: 'Source/PluginEditor.cpp',
     language: 'cpp',
-    category: 'Analysis DSP',
-    description: 'Header for real-time chord detection engine matching the interactive visualizer in the plugin simulator.',
-    content: chordDetectorH,
+    category: 'GUI Canvas',
+    description: 'JUCE 8 WebBrowserComponent implementation embedding the exact React + Tailwind v4 Studio Rack UI with bidirectional C++ DAW bridge.',
+    content: editorCpp,
   },
   {
-    filename: 'ArpEngine.h',
-    path: 'Source/ArpEngine.h',
-    language: 'cpp',
-    category: 'Processor DSP',
-    description: 'Arpeggiator engine generating Up, Down, Up/Down, Random, and Chord sequences across 1-4 octaves.',
-    content: arpEngineH,
+    filename: 'index.html',
+    path: 'WebUI/index.html',
+    language: 'html',
+    category: 'GUI Canvas',
+    description: 'Sandbox-safe offline HTML shell with zero external CDN/font dependencies and inlined Tailwind v4 stylesheet for Logic Pro AUHostingService.',
+    content: webUiIndexHtml,
+  },
+  {
+    filename: 'app.css',
+    path: 'WebUI/app.css',
+    language: 'css',
+    category: 'GUI Canvas',
+    description: 'Pre-compiled Tailwind v4 + hardware studio rack stylesheet embedded into WebUIData BinaryData.',
+    content: webUiAppCss,
+  },
+  {
+    filename: 'app.js',
+    path: 'WebUI/app.js',
+    language: 'javascript',
+    category: 'GUI Canvas',
+    description: 'Self-contained production bundle of the full MidiLens React UI (Library Organiser, Preset Drawer, Piano Roll, Arp & Chord Visualiser).',
+    content: webUiAppJs,
+  },
+  {
+    filename: 'icon.svg',
+    path: 'WebUI/icon.svg',
+    language: 'xml',
+    category: 'GUI Canvas',
+    description: 'Embedded vector brandplate emblem served directly from JUCE BinaryData.',
+    content: webUiIconSvg,
   },
   {
     filename: 'install_au.command',
@@ -59,8 +89,16 @@ export const JUCE_CODE_FILES: CodeFileEntry[] = [
     path: 'install_local_au.sh',
     language: 'bash',
     category: 'Install Script',
-    description: '1-click Terminal script to configure CMake, compile AU, ad-hoc codesign, strip quarantine, and reset macOS AudioComponentRegistrar.',
+    description: '1-click Terminal script to configure CMake, compile AU with embedded WebUI BinaryData, ad-hoc codesign, and reset Logic Pro AUHostingService.',
     content: installLocalAuSh,
+  },
+  {
+    filename: 'CMakeLists.txt',
+    path: 'CMakeLists.txt',
+    language: 'cmake',
+    category: 'Configuration',
+    description: 'Universal CMake setup for AU MIDI FX (Logic Pro), VST3, JUCE 8.0.4 WebBrowserComponent, WebKit linkage, and MidiLensWebUIData BinaryData.',
+    content: cmakeLists,
   },
   {
     filename: 'build.yml',
@@ -71,19 +109,11 @@ export const JUCE_CODE_FILES: CodeFileEntry[] = [
     content: githubWorkflowYml,
   },
   {
-    filename: 'CMakeLists.txt',
-    path: 'CMakeLists.txt',
-    language: 'cmake',
-    category: 'Configuration',
-    description: 'Universal CMake setup for AU MIDI FX (Logic Pro), VST3, Apple Silicon/Intel architectures, and JUCE v8 modules.',
-    content: cmakeLists,
-  },
-  {
     filename: 'PluginProcessor.h',
     path: 'Source/PluginProcessor.h',
     language: 'cpp',
     category: 'Processor DSP',
-    description: 'Header for MidiPreviewerAudioProcessor with recursive folder scanning, scale/timing quantization, and APVTS.',
+    description: 'Header for MidiPreviewerAudioProcessor with lock-free MIDI playback, preview note auditioning, active pitch bitmask, and state persistence.',
     content: processorH,
   },
   {
@@ -91,24 +121,24 @@ export const JUCE_CODE_FILES: CodeFileEntry[] = [
     path: 'Source/PluginProcessor.cpp',
     language: 'cpp',
     category: 'Processor DSP',
-    description: 'Implementation of lock-free MIDI audition engine, recursive folder scanner, DAW transport sync, and humanization.',
+    description: 'Implementation of sample-accurate MIDI FX engine, DAW key-signature & transport telemetry, recursive folder scanner, and APVTS.',
     content: processorCpp,
   },
   {
-    filename: 'PianoRollComponent.h',
-    path: 'Source/PianoRollComponent.h',
+    filename: 'LockFreeMidiFifo.h',
+    path: 'Source/LockFreeMidiFifo.h',
     language: 'cpp',
-    category: 'GUI Canvas',
-    description: 'Header for piano roll component with scale locking, zoom factors, and draggable sequence length handle.',
-    content: pianoRollH,
+    category: 'Processor DSP',
+    description: 'Header for lock-free command FIFO and immutable sequence snapshot structs.',
+    content: lockFreeFifoH,
   },
   {
-    filename: 'PianoRollComponent.cpp',
-    path: 'Source/PianoRollComponent.cpp',
+    filename: 'ArpEngine.h',
+    path: 'Source/ArpEngine.h',
     language: 'cpp',
-    category: 'GUI Canvas',
-    description: 'Implementation of Phosphor CRT lab piano roll with deep night-green background (#070d09), flat rectangular phosphor green/amber note traces, and glowing playhead.',
-    content: pianoRollCpp,
+    category: 'Processor DSP',
+    description: 'Arpeggiator engine generating Up, Down, Up/Down, Random, and Chord sequences across 1-4 octaves.',
+    content: arpEngineH,
   },
   {
     filename: 'KeyDetector.h',
@@ -127,28 +157,36 @@ export const JUCE_CODE_FILES: CodeFileEntry[] = [
     content: keyDetectorCpp,
   },
   {
-    filename: 'PluginEditor.h',
-    path: 'Source/PluginEditor.h',
+    filename: 'ChordDetector.h',
+    path: 'Source/ChordDetector.h',
     language: 'cpp',
-    category: 'GUI Canvas',
-    description: 'Header for main GUI editor with Quantize, Scale Snap, Humanize, and Recursive Folder Scan controls.',
-    content: editorH,
+    category: 'Analysis DSP',
+    description: 'Header for real-time chord detection engine matching the interactive visualiser in the plugin.',
+    content: chordDetectorH,
   },
   {
-    filename: 'PluginEditor.cpp',
-    path: 'Source/PluginEditor.cpp',
+    filename: 'PianoRollComponent.h',
+    path: 'Source/PianoRollComponent.h',
     language: 'cpp',
     category: 'GUI Canvas',
-    description: 'Implementation of the Neve/SSL analog studio rack UI with dark anodized chassis, corner Allen screws, milled brandplate, and drag-to-DAW export.',
-    content: editorCpp,
+    description: 'MusicalScale pitch-snapping helper definitions used by PluginProcessor DSP.',
+    content: pianoRollH,
   },
   {
-    filename: 'LockFreeMidiFifo.h',
-    path: 'Source/LockFreeMidiFifo.h',
+    filename: 'PianoRollComponent.cpp',
+    path: 'Source/PianoRollComponent.cpp',
     language: 'cpp',
-    category: 'Processor DSP',
-    description: 'Header for lock-free command FIFO and copyable snapshot event structs.',
-    content: lockFreeFifoH,
+    category: 'GUI Canvas',
+    description: 'Scale interval pitch-snapping implementation.',
+    content: pianoRollCpp,
+  },
+  {
+    filename: 'MidiLensLookAndFeel.h',
+    path: 'Source/MidiLensLookAndFeel.h',
+    language: 'cpp',
+    category: 'GUI Canvas',
+    description: 'Optional fallback JUCE LookAndFeel header.',
+    content: midiLensLookAndFeelH,
   },
   {
     filename: 'MidiFileExporter.h',

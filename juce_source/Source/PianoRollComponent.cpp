@@ -69,6 +69,12 @@ void PianoRollComponent::setSequenceSnapshot(std::shared_ptr<const SequenceSnaps
             minPitch = std::max(0, low - 4);
             maxPitch = std::min(127, high + 4);
         }
+
+        if (snapshot->timeSigNumerator > 0 && snapshot->timeSigDenominator > 0)
+        {
+            timeSigNumerator = snapshot->timeSigNumerator;
+            timeSigDenominator = snapshot->timeSigDenominator;
+        }
     }
     resized();
     repaint();
@@ -301,7 +307,8 @@ void PianoRollComponent::paint(juce::Graphics& g)
     drawNotes(g, gridBounds);
     drawPlayhead(g, gridBounds);
     drawRuler(g, rulerBounds);
-    drawVelocityHeatmap(g, velBounds);
+    if (velocityBarHeight > 0)
+        drawVelocityHeatmap(g, velBounds);
 
     if (currentDragMode == DragMode::MarqueeSelect && !marqueeRect.isEmpty())
     {
@@ -796,7 +803,7 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
     }
 
     // Check if clicked the Velocity Heatmap Bar at the bottom
-    if (e.y >= getHeight() - velocityBarHeight)
+    if (velocityBarHeight > 0 && e.y >= getHeight() - velocityBarHeight)
     {
         // "SELECT ALL" button on left
         if (e.x <= 84)

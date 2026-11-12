@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "=========================================================="
-echo " Building & Installing MidiLens AU (Local Ad-Hoc Build)"
+echo " Building & Installing MidiLens AU (JUCE 8 Studio Rack UI)"
 echo "=========================================================="
 
 # 1. Check for CMake
@@ -40,58 +40,71 @@ if ! command -v clang &> /dev/null; then
     exit 1
 fi
 
-# 3. Create destination directory in user library (no sudo required)
+# 3. Verify embedded WebUI assets exist in WebUI/
+if [ ! -f "WebUI/index.html" ] || [ ! -f "WebUI/app.js" ] || [ ! -f "WebUI/app.css" ]; then
+    echo "❌ Error: WebUI/ bundle files are missing from this folder."
+    echo "Please make sure you extracted the complete MidiLens_JUCE_Project.zip archive."
+    exit 1
+fi
+
+# 4. Create destination directory in user library (no sudo required)
 AU_DEST_DIR="$HOME/Library/Audio/Plug-Ins/Components"
 mkdir -p "$AU_DEST_DIR"
 
-# 4. Configure & Build AU target
-# Clear stale CMake cache from any previous failed builds
-rm -f build/CMakeCache.txt
+# 5. Clean previous compiled object files & CMake cache (preserving _deps/juce-src if cached)
+rm -rf build/CMakeFiles build/CMakeCache.txt build/MidiPreviewer_artefacts build/juce_binarydata_MidiLensWebUIData
 
-echo "⚙️ Configuring CMake (Release)..."
+echo "⚙️ Configuring CMake (Release with Embedded JUCE 8 WebUI)..."
 cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
 
 echo "🔨 Compiling MidiLens Audio Unit (AU)..."
-if ! cmake --build build --config Release --target MidiPreviewer_AU; then
+if ! cmake --build build --config Release --target MidiPreviewer_AU -j4; then
     echo ""
     echo "❌ Compilation failed. Look at the compiler error above."
     exit 1
 fi
 
 # Find the built component (handles Xcode, Ninja, or Unix Makefiles directory structures)
-AU_BUILT_PATH=$(find build -name "MidiLens.component" -type d | head -n 1)
+AU_BUILT_PATH=$(find build -name "*.component" -type d | head -n 1)
 
 if [ ! -d "$AU_BUILT_PATH" ]; then
-    echo "❌ Error: Could not find MidiLens.component after build."
+    echo "❌ Error: Could not find built .component after build."
     exit 1
 fi
 
-# 5. Copy to user Audio Plug-Ins folder
+# 6. Copy to user Audio Plug-Ins folder (clearing any older/stale plugin variants)
 echo "📦 Installing to $AU_DEST_DIR/MidiLens.component..."
 rm -rf "$AU_DEST_DIR/MidiLens.component"
-cp -R "$AU_BUILT_PATH" "$AU_DEST_DIR/"
+rm -rf "$AU_DEST_DIR/MIDI Previewer.component"
+rm -rf "$AU_DEST_DIR/MidiPreviewer.component"
+cp -R "$AU_BUILT_PATH" "$AU_DEST_DIR/MidiLens.component"
 
-# 6. Ad-hoc self-sign (Bypasses Gatekeeper completely for local machines)
+# 7. Ad-hoc self-sign (Bypasses Gatekeeper completely for local machines)
 echo "🔏 Applying local ad-hoc code signature..."
 codesign --force --deep --sign - "$AU_DEST_DIR/MidiLens.component"
 
-# 7. Strip quarantine attribute (crucial if files were downloaded or git cloned)
+# 8. Strip quarantine attribute (crucial if files were downloaded or git cloned)
 echo "🛡️ Clearing quarantine attributes..."
 xattr -cr "$AU_DEST_DIR/MidiLens.component"
+touch "$AU_DEST_DIR/MidiLens.component"
 
-# 8. Reset macOS AudioUnit cache daemon so Logic / DAWs immediately detect it
-echo "🔄 Resetting macOS AudioComponentRegistrar..."
+# 9. Reset macOS AudioUnit & AUHostingService caches so Logic Pro loads the new UI immediately
+echo "🔄 Resetting macOS AudioComponentRegistrar, AUHostingService & cache..."
 killall -9 AudioComponentRegistrar 2>/dev/null || true
+killall -9 AUHostingServiceXPC_arrow 2>/dev/null || true
+killall -9 AUHostingServiceXPC 2>/dev/null || true
+rm -f "$HOME/Library/Caches/AudioUnitCache/com.apple.audiounits.cache" 2>/dev/null || true
+rm -f "$HOME/Library/Caches/com.apple.audiounits.cache" 2>/dev/null || true
 
 echo "=========================================================="
-echo "✅ SUCCESS: MidiLens AU is installed!"
+echo "✅ SUCCESS: MidiLens AU (Full Studio Rack UI) is installed!"
 echo "📍 Location: $AU_DEST_DIR/MidiLens.component"
 echo ""
-echo "💡 How to test in Logic Pro:"
-echo "   1. Create an Instrument track (e.g. Vintage Electric Piano)."
+echo "💡 IMPORTANT: Quit & reopen Logic Pro if it is currently open"
+echo "   so Logic reloads the new MidiLens AU binary."
+echo ""
+echo "💡 How to open in Logic Pro:"
+echo "   1. Create an Instrument track (e.g. Serum 2 / Vintage Electric Piano)."
 echo "   2. Click the 'MIDI FX' slot ABOVE the instrument plugin."
 echo "   3. Select: Audio Units > AudioDSP > MidiLens."
-echo ""
-echo "💡 To run Apple's command-line AU validator now, run:"
-echo "   auval -v aumf MPrv Adsp"
 echo "=========================================================="

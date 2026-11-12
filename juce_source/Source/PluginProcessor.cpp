@@ -1,7 +1,9 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include <algorithm>
+#include <cmath>
 #include <random>
+#include <unordered_set>
 
 namespace MidiPreviewer
 {
@@ -51,7 +53,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout MidiPreviewerAudioProcessor:
         juce::ParameterID { paramSyncMode, 1 },
         "Sync Mode",
         juce::StringArray { "Follow DAW", "Free Audition" },
-        0));
+        1)); // Default to Free Audition so Play works immediately even when DAW transport is stopped
 
     params.push_back(std::make_unique<juce::AudioParameterBool>(
         juce::ParameterID { paramLoop, 1 },
@@ -61,7 +63,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout MidiPreviewerAudioProcessor:
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID { paramManualTempo, 1 },
         "Manual Tempo",
-        juce::NormalisableRange<float>(30.0f, 300.0f, 1.0f),
+        juce::NormalisableRange<float>(20.0f, 320.0f, 1.0f),
         120.0f));
 
     return { params.begin(), params.end() };
@@ -77,17 +79,23 @@ void MidiPreviewerAudioProcessor::prepareToPlay(double newSampleRate, int /*samp
 {
     sampleRate = (newSampleRate > 1000.0) ? newSampleRate : 44100.0;
     activeNoteCount = 0;
+    previewNoteCount = 0;
     lastPpqPosition = 0.0;
     currentPlayheadPpq.store(0.0, std::memory_order_relaxed);
     pendingAllNotesOff.store(true, std::memory_order_relaxed);
+    activePitchBitsLow.store(0, std::memory_order_relaxed);
+    activePitchBitsHigh.store(0, std::memory_order_relaxed);
 }
 
 void MidiPreviewerAudioProcessor::releaseResources()
 {
     activeNoteCount = 0;
+    previewNoteCount = 0;
+    activePitchBitsLow.store(0, std::memory_order_relaxed);
+    activePitchBitsHigh.store(0, std::memory_order_relaxed);
 }
 
-void MidiPreviewerAudioProcessor::handleIncomingCommands()
+void MidiPreviewerAudioProcessor::handleIncomingCommands(juce::MidiBuffer& midiMessages)
 {
     AudioCommand cmd;
     while (commandQueue.pop(cmd))
@@ -98,8 +106,15 @@ void MidiPreviewerAudioProcessor::handleIncomingCommands()
                 isPlaying.store(true, std::memory_order_relaxed);
                 break;
 
+            case AudioCommandType::PausePlayback:
+                isPlaying.store(false, std::memory_order_relaxed);
+                pendingAllNotesOff.store(true, std::memory_order_relaxed);
+                break;
+
             case AudioCommandType::StopPlayback:
                 isPlaying.store(false, std::memory_order_relaxed);
+                currentPlayheadPpq.store(0.0, std::memory_order_relaxed);
+                lastPpqPosition = 0.0;
                 pendingAllNotesOff.store(true, std::memory_order_relaxed);
                 break;
 
@@ -112,6 +127,33 @@ void MidiPreviewerAudioProcessor::handleIncomingCommands()
             case AudioCommandType::AllNotesOff:
                 pendingAllNotesOff.store(true, std::memory_order_relaxed);
                 break;
+
+            case AudioCommandType::TriggerPreviewNote:
+            {
+                const int transpose = transposeParam != nullptr ? static_cast<int>(transposeParam->load(std::memory_order_relaxed)) : 0;
+                const int noteNum = juce::jlimit(0, 127, cmd.intParam + transpose);
+                const float vel = juce::jlimit(0.05f, 1.0f, cmd.floatParam1);
+                const double durSec = juce::jlimit(0.04, 4.0, static_cast<double>(cmd.floatParam2));
+                const int durSamples = std::max(1, static_cast<int>(durSec * sampleRate));
+
+                // Retrigger cleanly if already sounding in preview pool
+                for (int i = 0; i < previewNoteCount; ++i)
+                {
+                    if (previewNotePool[static_cast<size_t>(i)].noteNumber == noteNum)
+                    {
+                        midiMessages.addEvent(juce::MidiMessage::noteOff(1, noteNum, 0.0f), 0);
+                        previewNotePool[static_cast<size_t>(i)] = previewNotePool[static_cast<size_t>(--previewNoteCount)];
+                        break;
+                    }
+                }
+
+                midiMessages.addEvent(juce::MidiMessage::noteOn(1, noteNum, vel), 0);
+                if (previewNoteCount < static_cast<int>(previewNotePool.size()))
+                {
+                    previewNotePool[static_cast<size_t>(previewNoteCount++)] = { 1, noteNum, durSamples };
+                }
+                break;
+            }
 
             case AudioCommandType::UpdateParameters:
             case AudioCommandType::None:
@@ -132,33 +174,124 @@ void MidiPreviewerAudioProcessor::flushAllNotesOff(juce::MidiBuffer& midiMessage
     }
     activeNoteCount = 0;
 
+    for (int i = 0; i < previewNoteCount; ++i)
+    {
+        auto noteOff = juce::MidiMessage::noteOff(previewNotePool[static_cast<size_t>(i)].channel,
+                                                  previewNotePool[static_cast<size_t>(i)].noteNumber,
+                                                  0.0f);
+        midiMessages.addEvent(noteOff, 0);
+    }
+    previewNoteCount = 0;
+
     for (int ch = 1; ch <= 16; ++ch)
     {
         midiMessages.addEvent(juce::MidiMessage::allNotesOff(ch), 0);
         midiMessages.addEvent(juce::MidiMessage::allSoundOff(ch), 0);
     }
+
+    activePitchBitsLow.store(0, std::memory_order_relaxed);
+    activePitchBitsHigh.store(0, std::memory_order_relaxed);
 }
 
-void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& /*buffer*/, juce::MidiBuffer& midiMessages)
+void MidiPreviewerAudioProcessor::updateActivePitchBitmask()
 {
-    handleIncomingCommands();
+    uint64_t low = 0;
+    uint64_t high = 0;
 
-    if (newSequenceAvailable.load(std::memory_order_acquire))
+    for (int i = 0; i < activeNoteCount; ++i)
     {
-        activeSequence = pendingSequence;
-        newSequenceAvailable.store(false, std::memory_order_release);
-        flushAllNotesOff(midiMessages);
-        currentPlayheadPpq.store(0.0, std::memory_order_relaxed);
-        lastPpqPosition = 0.0;
+        const int p = activeNotePool[static_cast<size_t>(i)].noteNumber;
+        if (p >= 0 && p < 64)
+            low |= (uint64_t(1) << p);
+        else if (p >= 64 && p < 128)
+            high |= (uint64_t(1) << (p - 64));
     }
 
-    if (pendingAllNotesOff.exchange(false, std::memory_order_acq_rel))
+    for (int i = 0; i < previewNoteCount; ++i)
     {
-        flushAllNotesOff(midiMessages);
+        const int p = previewNotePool[static_cast<size_t>(i)].noteNumber;
+        if (p >= 0 && p < 64)
+            low |= (uint64_t(1) << p);
+        else if (p >= 64 && p < 128)
+            high |= (uint64_t(1) << (p - 64));
     }
 
-    if (activeSequence == nullptr || activeSequence->events.empty())
-        return;
+    activePitchBitsLow.store(low, std::memory_order_relaxed);
+    activePitchBitsHigh.store(high, std::memory_order_relaxed);
+}
+
+bool MidiPreviewerAudioProcessor::isAudioPlaying() const
+{
+    const int syncMode = syncModeParam != nullptr ? static_cast<int>(syncModeParam->load(std::memory_order_relaxed)) : 1;
+    if (syncMode == static_cast<int>(SyncMode::FollowDAW))
+        return hostIsPlaying.load(std::memory_order_relaxed);
+    return isPlaying.load(std::memory_order_relaxed);
+}
+
+std::vector<int> MidiPreviewerAudioProcessor::getActivePitches() const
+{
+    std::vector<int> pitches;
+    const uint64_t low = activePitchBitsLow.load(std::memory_order_relaxed);
+    const uint64_t high = activePitchBitsHigh.load(std::memory_order_relaxed);
+
+    if (low != 0)
+    {
+        for (int b = 0; b < 64; ++b)
+            if ((low & (uint64_t(1) << b)) != 0)
+                pitches.push_back(b);
+    }
+    if (high != 0)
+    {
+        for (int b = 0; b < 64; ++b)
+            if ((high & (uint64_t(1) << b)) != 0)
+                pitches.push_back(b + 64);
+    }
+    return pitches;
+}
+
+void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
+{
+    const int numSamples = std::max(1, buffer.getNumSamples() > 0 ? buffer.getNumSamples() : getBlockSize());
+
+    // Track host DAW key signature via explicit MIDI meta-events AND live DAW track notes
+    for (const auto metadata : midiMessages)
+    {
+        auto msg = metadata.getMessage();
+        if (msg.isKeySignatureMetaEvent() || (msg.isMetaEvent() && msg.getRawDataSize() >= 4 && msg.getRawData()[1] == 0x59))
+        {
+            const auto* rawData = msg.getRawData();
+            const int size = msg.getRawDataSize();
+            int8_t sf = (size >= 4) ? static_cast<int8_t>(rawData[3]) : 0;
+            bool isMinor = (size >= 5) ? (rawData[4] != 0) : false;
+            int root = isMinor ? ((9 + sf * 7) % 12 + 12) % 12
+                               : ((sf * 7) % 12 + 12) % 12;
+            hostKeyRoot.store(root, std::memory_order_relaxed);
+            hostKeyIsMinor.store(isMinor, std::memory_order_relaxed);
+            hostKeyDetected.store(true, std::memory_order_relaxed);
+        }
+        else if (msg.isNoteOn() && msg.getVelocity() > 0)
+        {
+            int pitchClass = msg.getNoteNumber() % 12;
+            float vel = msg.getFloatVelocity();
+            dawIncomingPitchClassWeights[static_cast<size_t>(pitchClass)] += vel;
+            dawIncomingNoteCount++;
+
+            if (dawIncomingNoteCount >= 8)
+            {
+                KeyDetector detector;
+                auto res = detector.analyzeNoteWeights(dawIncomingPitchClassWeights);
+                if (res.confidence > 0.05f)
+                {
+                    hostKeyRoot.store(res.rootPitch, std::memory_order_relaxed);
+                    hostKeyIsMinor.store(res.isMinor, std::memory_order_relaxed);
+                    hostKeyDetected.store(true, std::memory_order_relaxed);
+                }
+                for (auto& w : dawIncomingPitchClassWeights)
+                    w *= 0.5f;
+                dawIncomingNoteCount = 4;
+            }
+        }
+    }
 
     double currentBpm = 120.0;
     bool isHostPlayingNow = false;
@@ -181,6 +314,51 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& /*buffe
     hostBpm.store(currentBpm, std::memory_order_relaxed);
     hostIsPlaying.store(isHostPlayingNow, std::memory_order_relaxed);
 
+    handleIncomingCommands(midiMessages);
+
+    if (newSequenceAvailable.load(std::memory_order_acquire))
+    {
+        {
+            std::lock_guard<std::mutex> lock(sequenceExchangeMutex);
+            activeSequence = pendingSequence;
+        }
+        newSequenceAvailable.store(false, std::memory_order_release);
+        flushAllNotesOff(midiMessages);
+        if (resetPlayheadOnSwap.exchange(false, std::memory_order_acq_rel))
+        {
+            currentPlayheadPpq.store(0.0, std::memory_order_relaxed);
+            lastPpqPosition = 0.0;
+        }
+    }
+
+    if (pendingAllNotesOff.exchange(false, std::memory_order_acq_rel))
+    {
+        flushAllNotesOff(midiMessages);
+    }
+
+    // Advance & release one-shot preview audition notes even if transport is stopped
+    for (int i = 0; i < previewNoteCount;)
+    {
+        auto& pn = previewNotePool[static_cast<size_t>(i)];
+        if (pn.samplesRemaining <= numSamples)
+        {
+            const int offOffset = juce::jlimit(0, numSamples - 1, pn.samplesRemaining - 1);
+            midiMessages.addEvent(juce::MidiMessage::noteOff(pn.channel, pn.noteNumber, 0.0f), offOffset);
+            previewNotePool[static_cast<size_t>(i)] = previewNotePool[static_cast<size_t>(--previewNoteCount)];
+        }
+        else
+        {
+            pn.samplesRemaining -= numSamples;
+            ++i;
+        }
+    }
+
+    if (activeSequence == nullptr || activeSequence->events.empty())
+    {
+        updateActivePitchBitmask();
+        return;
+    }
+
     const int syncMode = static_cast<int>(syncModeParam->load(std::memory_order_relaxed));
     const bool loopEnabled = loopParam->load(std::memory_order_relaxed) > 0.5f;
     const int transpose = static_cast<int>(transposeParam->load(std::memory_order_relaxed));
@@ -188,11 +366,11 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& /*buffe
     const float velocityScale = velocityScaleParam->load(std::memory_order_relaxed);
     const int velocityOffset = static_cast<int>(velocityOffsetParam->load(std::memory_order_relaxed));
 
-    const int numSamples = getBlockSize();
     const double seqLengthPpq = std::max(0.25, activeSequence->totalLengthPpq);
 
     double startPpq = 0.0;
     double endPpq = 0.0;
+    double effectiveBpm = currentBpm;
 
     if (syncMode == static_cast<int>(SyncMode::FollowDAW))
     {
@@ -200,13 +378,15 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& /*buffe
         {
             if (activeNoteCount > 0)
                 flushAllNotesOff(midiMessages);
+            updateActivePitchBitmask();
             return;
         }
 
-        double ppqPerSample = (currentBpm / (60.0 * sampleRate)) * speedMultiplier;
-        double blockPpqSpan = ppqPerSample * numSamples;
+        effectiveBpm = currentBpm;
+        const double ppqPerSample = (effectiveBpm / (60.0 * sampleRate)) * speedMultiplier;
+        const double blockPpqSpan = ppqPerSample * numSamples;
 
-        startPpq = std::fmod(hostPpq, seqLengthPpq);
+        startPpq = std::fmod(hostPpq * speedMultiplier, seqLengthPpq);
         if (startPpq < 0.0)
             startPpq += seqLengthPpq;
 
@@ -219,16 +399,19 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& /*buffe
         {
             if (activeNoteCount > 0)
                 flushAllNotesOff(midiMessages);
+            updateActivePitchBitmask();
             return;
         }
 
         const float manualBpm = manualTempoParam != nullptr ? manualTempoParam->load(std::memory_order_relaxed) : 120.0f;
-        const double auditionBpm = manualBpm > 20.0f ? static_cast<double>(manualBpm) : currentBpm;
+        effectiveBpm = manualBpm >= 20.0f ? static_cast<double>(manualBpm) : currentBpm;
 
-        double ppqPerSample = (auditionBpm / (60.0 * sampleRate)) * speedMultiplier;
-        double blockPpqSpan = ppqPerSample * numSamples;
+        const double ppqPerSample = (effectiveBpm / (60.0 * sampleRate)) * speedMultiplier;
+        const double blockPpqSpan = ppqPerSample * numSamples;
 
         startPpq = currentPlayheadPpq.load(std::memory_order_relaxed);
+        if (startPpq >= seqLengthPpq || startPpq < 0.0)
+            startPpq = 0.0;
         endPpq = startPpq + blockPpqSpan;
 
         if (loopEnabled && endPpq >= seqLengthPpq)
@@ -240,6 +423,7 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& /*buffe
             isPlaying.store(false, std::memory_order_relaxed);
             currentPlayheadPpq.store(0.0, std::memory_order_relaxed);
             flushAllNotesOff(midiMessages);
+            updateActivePitchBitmask();
             return;
         }
         else
@@ -248,9 +432,12 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& /*buffe
         }
     }
 
-    double ppqPerSample = (currentBpm / (60.0 * sampleRate)) * speedMultiplier;
+    const double ppqPerSample = (effectiveBpm / (60.0 * sampleRate)) * speedMultiplier;
     if (ppqPerSample <= 0.0)
+    {
+        updateActivePitchBitmask();
         return;
+    }
 
     for (const auto& ev : activeSequence->events)
     {
@@ -339,6 +526,8 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& /*buffe
             }
         }
     }
+
+    updateActivePitchBitmask();
 }
 
 juce::Array<juce::File> MidiPreviewerAudioProcessor::scanFolderForMidiFiles(const juce::File& rootFolder, bool searchSubfolders)
@@ -362,7 +551,7 @@ void MidiPreviewerAudioProcessor::quantizeTiming(double gridPpq)
         ev.ppqPosition = std::round(ev.ppqPosition / gridPpq) * gridPpq;
         ev.ppqDuration = std::max(gridPpq, std::round(ev.ppqDuration / gridPpq) * gridPpq);
     }
-    setSequenceSnapshot(updated);
+    setSequenceSnapshot(updated, false);
 }
 
 void MidiPreviewerAudioProcessor::quantizeScale(int rootPitch, MusicalScale scale)
@@ -383,7 +572,7 @@ void MidiPreviewerAudioProcessor::quantizeScale(int rootPitch, MusicalScale scal
             ev.message = juce::MidiMessage::noteOn(ev.message.getChannel(), snapped, ev.message.getFloatVelocity());
         }
     }
-    setSequenceSnapshot(updated);
+    setSequenceSnapshot(updated, false);
 }
 
 void MidiPreviewerAudioProcessor::humanizeVelocity(int rangeDelta)
@@ -404,7 +593,7 @@ void MidiPreviewerAudioProcessor::humanizeVelocity(int rangeDelta)
             ev.message = juce::MidiMessage::noteOn(ev.message.getChannel(), ev.message.getNoteNumber(), newVel);
         }
     }
-    setSequenceSnapshot(updated);
+    setSequenceSnapshot(updated, false);
 }
 
 void MidiPreviewerAudioProcessor::humanizeTiming(double maxDeltaPpq)
@@ -420,7 +609,7 @@ void MidiPreviewerAudioProcessor::humanizeTiming(double maxDeltaPpq)
     {
         ev.ppqPosition = std::max(0.0, ev.ppqPosition + dist(rng));
     }
-    setSequenceSnapshot(updated);
+    setSequenceSnapshot(updated, false);
 }
 
 void MidiPreviewerAudioProcessor::harmonizeNotes(int semitoneInterval)
@@ -438,7 +627,7 @@ void MidiPreviewerAudioProcessor::harmonizeNotes(int semitoneInterval)
         }
     }
 
-    setSequenceSnapshot(updated);
+    setSequenceSnapshot(updated, false);
 }
 
 void MidiPreviewerAudioProcessor::setSequenceLength(double newTotalPpq)
@@ -448,7 +637,7 @@ void MidiPreviewerAudioProcessor::setSequenceLength(double newTotalPpq)
 
     auto updated = std::make_shared<SequenceSnapshot>(*snap);
     updated->totalLengthPpq = std::max(1.0, newTotalPpq);
-    setSequenceSnapshot(updated);
+    setSequenceSnapshot(updated, false);
 }
 
 void MidiPreviewerAudioProcessor::loadMidiSequenceFromFile(const juce::File& midiFile)
@@ -559,13 +748,15 @@ void MidiPreviewerAudioProcessor::loadMidiSequenceFromFile(const juce::File& mid
     snapshot->detectedIsMinor = keyResult.isMinor;
     snapshot->keyConfidence = keyResult.confidence;
 
-    setSequenceSnapshot(snapshot);
+    setSequenceSnapshot(snapshot, true);
 }
 
-void MidiPreviewerAudioProcessor::setSequenceSnapshot(std::shared_ptr<const SequenceSnapshot> newSnapshot)
+void MidiPreviewerAudioProcessor::setSequenceSnapshot(std::shared_ptr<const SequenceSnapshot> newSnapshot, bool resetPlayhead)
 {
     std::lock_guard<std::mutex> lock(sequenceExchangeMutex);
     pendingSequence = std::move(newSnapshot);
+    if (resetPlayhead)
+        resetPlayheadOnSwap.store(true, std::memory_order_relaxed);
     newSequenceAvailable.store(true, std::memory_order_release);
 }
 
@@ -578,6 +769,39 @@ std::shared_ptr<const SequenceSnapshot> MidiPreviewerAudioProcessor::getSequence
 void MidiPreviewerAudioProcessor::sendAudioCommand(const AudioCommand& cmd)
 {
     commandQueue.push(cmd);
+}
+
+void MidiPreviewerAudioProcessor::setSavedUiStateJson(const juce::String& json)
+{
+    std::lock_guard<std::mutex> lock(uiStateMutex);
+    savedUiStateJson = json;
+}
+
+juce::String MidiPreviewerAudioProcessor::getSavedUiStateJson() const
+{
+    std::lock_guard<std::mutex> lock(uiStateMutex);
+    return savedUiStateJson;
+}
+
+void MidiPreviewerAudioProcessor::appendScannedFiles(const std::vector<ScannedFileMetadata>& files)
+{
+    std::lock_guard<std::mutex> lock(uiStateMutex);
+    std::unordered_set<std::string> existing;
+    existing.reserve(scannedFilesMetadata.size() + files.size());
+    for (const auto& f : scannedFilesMetadata)
+        existing.insert(f.fullPath.toStdString());
+
+    for (const auto& item : files)
+    {
+        if (existing.insert(item.fullPath.toStdString()).second)
+            scannedFilesMetadata.push_back(item);
+    }
+}
+
+std::vector<ScannedFileMetadata> MidiPreviewerAudioProcessor::getScannedFiles() const
+{
+    std::lock_guard<std::mutex> lock(uiStateMutex);
+    return scannedFilesMetadata;
 }
 
 KeyDetectionResult MidiPreviewerAudioProcessor::getDetectedKey() const
@@ -602,7 +826,13 @@ void MidiPreviewerAudioProcessor::getStateInformation(juce::MemoryBlock& destDat
 {
     auto state = apvts.copyState();
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
-    copyXmlToBinary(*xml, destData);
+    if (xml != nullptr)
+    {
+        const juce::String uiJson = getSavedUiStateJson();
+        if (uiJson.isNotEmpty())
+            xml->setAttribute("midiLensUiState", uiJson);
+        copyXmlToBinary(*xml, destData);
+    }
 }
 
 void MidiPreviewerAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
@@ -610,6 +840,11 @@ void MidiPreviewerAudioProcessor::setStateInformation(const void* data, int size
     std::unique_ptr<juce::XmlElement> xmlState(getXmlFromBinary(data, sizeInBytes));
     if (xmlState != nullptr && xmlState->hasTagName(apvts.state.getType()))
     {
+        if (xmlState->hasAttribute("midiLensUiState"))
+        {
+            setSavedUiStateJson(xmlState->getStringAttribute("midiLensUiState"));
+            xmlState->removeAttribute("midiLensUiState");
+        }
         apvts.replaceState(juce::ValueTree::fromXml(*xmlState));
     }
 }

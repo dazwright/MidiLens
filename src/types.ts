@@ -72,7 +72,8 @@ export interface PluginParameters {
 export interface ScannedMidiFile {
   name: string;
   relativePath: string;
-  file: File;
+  file?: File;
+  nativePath?: string;
   sizeBytes: number;
   notesCount?: number;
   bpm?: number;

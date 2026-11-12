@@ -1,5 +1,6 @@
 import { MidiNote, PluginParameters } from './types';
 import { arpeggiateNotes } from './arpUtils';
+import { isJuceNative, emitToJuce } from './juceBridge';
 
 class AudioSynthesizerEngine {
   private ctx: AudioContext | null = null;
@@ -55,6 +56,7 @@ class AudioSynthesizerEngine {
   private analyserNode: AnalyserNode | null = null;
 
   private initContext() {
+    if (isJuceNative()) return;
     if (!this.ctx) {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       this.ctx = new AudioCtx();
@@ -82,6 +84,7 @@ class AudioSynthesizerEngine {
   }
 
   public getAnalyserNode(): AnalyserNode | null {
+    if (isJuceNative()) return null;
     this.initContext();
     return this.analyserNode;
   }
@@ -153,6 +156,12 @@ class AudioSynthesizerEngine {
   }
 
   public play() {
+    if (isJuceNative()) {
+      this.isPlaying = true;
+      if (this.onStateChangeCallback) this.onStateChangeCallback(true);
+      emitToJuce('transportCommand', { action: 'play' });
+      return;
+    }
     this.initContext();
     if (this.isPlaying) return;
 
@@ -164,6 +173,12 @@ class AudioSynthesizerEngine {
   }
 
   public pause() {
+    if (isJuceNative()) {
+      this.isPlaying = false;
+      if (this.onStateChangeCallback) this.onStateChangeCallback(false);
+      emitToJuce('transportCommand', { action: 'pause' });
+      return;
+    }
     this.isPlaying = false;
     this.killAllVoices();
     if (this.animFrameId) {
@@ -174,6 +189,14 @@ class AudioSynthesizerEngine {
   }
 
   public stop() {
+    if (isJuceNative()) {
+      this.isPlaying = false;
+      this.currentPpq = 0;
+      if (this.onStateChangeCallback) this.onStateChangeCallback(false);
+      if (this.onPlayheadCallback) this.onPlayheadCallback(0);
+      emitToJuce('transportCommand', { action: 'stop' });
+      return;
+    }
     this.pause();
     this.currentPpq = 0;
     if (this.onPlayheadCallback) this.onPlayheadCallback(0);
@@ -182,6 +205,11 @@ class AudioSynthesizerEngine {
 
   public seek(ppq: number) {
     this.currentPpq = Math.max(0, Math.min(this.sequenceLengthPpq, ppq));
+    if (isJuceNative()) {
+      if (this.onPlayheadCallback) this.onPlayheadCallback(this.currentPpq);
+      emitToJuce('transportCommand', { action: 'seek', ppq: this.currentPpq });
+      return;
+    }
     this.killAllVoices();
     if (this.onPlayheadCallback) this.onPlayheadCallback(this.currentPpq);
   }
@@ -195,6 +223,15 @@ class AudioSynthesizerEngine {
   }
 
   public auditionNote(pitch: number, velocity: number = 0.75, durationSeconds: number = 0.35) {
+    if (isJuceNative()) {
+      const transposedPitch = Math.min(127, Math.max(0, pitch + this.params.transpose));
+      emitToJuce('auditionNote', {
+        pitch: transposedPitch,
+        velocity: Math.min(1.0, Math.max(0.05, velocity)),
+        durationSeconds,
+      });
+      return;
+    }
     this.initContext();
     this.playSynthesizerVoice({
       id: -999,

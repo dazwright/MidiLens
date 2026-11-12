@@ -70,6 +70,8 @@ public:
     float getSelectedAverageVelocity() const;
     void setSelectedVelocity(float newVel);
     std::vector<int> getCurrentlyAuditioningPitches() const;
+    int getSelectedNoteCount() const { return static_cast<int>(selectedNoteIds.size()); }
+    int getTotalNoteCount() const { return static_cast<int>(editableEvents.size()); }
 
     // Cut / Copy / Paste Operations
     struct ClipboardNote
@@ -112,7 +114,7 @@ private:
 
     int rulerHeight { 30 };
     int pianoKeysWidth { 46 };
-    int velocityBarHeight { 28 };
+    int velocityBarHeight { 0 }; // Velocity is placed below Piano Roll in Strip 5 matching web layout
 
     // Drag tracking
     enum class DragMode

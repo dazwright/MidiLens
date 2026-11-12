@@ -2,8 +2,12 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_basics/juce_audio_basics.h>
+#include <array>
 #include <atomic>
+#include <cstdint>
 #include <memory>
+#include <mutex>
+#include <vector>
 #include "LockFreeMidiFifo.h"
 #include "KeyDetector.h"
 #include "PianoRollComponent.h" // For MusicalScale definition
@@ -15,6 +19,14 @@ enum class SyncMode
 {
     FollowDAW = 0,
     FreeAudition = 1
+};
+
+struct ScannedFileMetadata
+{
+    juce::String name;
+    juce::String relativePath;
+    juce::String fullPath;
+    juce::int64 sizeBytes { 0 };
 };
 
 class MidiPreviewerAudioProcessor : public juce::AudioProcessor
@@ -57,7 +69,7 @@ public:
     //==============================================================================
     // Realtime Sequence Management (Lock-Free)
     void loadMidiSequenceFromFile(const juce::File& midiFile);
-    void setSequenceSnapshot(std::shared_ptr<const SequenceSnapshot> newSnapshot);
+    void setSequenceSnapshot(std::shared_ptr<const SequenceSnapshot> newSnapshot, bool resetPlayhead = false);
     std::shared_ptr<const SequenceSnapshot> getSequenceSnapshot() const;
 
     // Hard Drive Folder Scanning (Recursive)
@@ -74,12 +86,42 @@ public:
     // GUI / Audio thread commands
     void sendAudioCommand(const AudioCommand& cmd);
 
+    // Persistent WebUI State & Scanned Library Metadata
+    void setSavedUiStateJson(const juce::String& json);
+    juce::String getSavedUiStateJson() const;
+    void appendScannedFiles(const std::vector<ScannedFileMetadata>& files);
+    std::vector<ScannedFileMetadata> getScannedFiles() const;
+
     // Audio Playback State getters for GUI polling
     double getCurrentPlayheadPpq() const { return currentPlayheadPpq.load(std::memory_order_relaxed); }
-    bool isAudioPlaying() const { return isPlaying.load(std::memory_order_relaxed); }
+    bool isAudioPlaying() const;
     double getHostBpm() const { return hostBpm.load(std::memory_order_relaxed); }
     bool isHostPlaying() const { return hostIsPlaying.load(std::memory_order_relaxed); }
+    std::vector<int> getActivePitches() const;
     KeyDetectionResult getDetectedKey() const;
+
+    struct HostKeyInfo
+    {
+        int rootPitch { 0 }; // 0 = C
+        bool isMinor { false };
+        bool isDetected { false };
+
+        juce::String getKeyName() const
+        {
+            static const char* noteNames[] = { "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B" };
+            juce::String root = noteNames[(rootPitch % 12 + 12) % 12];
+            return root + (isMinor ? " min" : " maj");
+        }
+    };
+
+    HostKeyInfo getHostKey() const
+    {
+        HostKeyInfo info;
+        info.rootPitch = hostKeyRoot.load(std::memory_order_relaxed);
+        info.isMinor = hostKeyIsMinor.load(std::memory_order_relaxed);
+        info.isDetected = hostKeyDetected.load(std::memory_order_relaxed);
+        return info;
+    }
 
     // Parameter layout & APVTS
     juce::AudioProcessorValueTreeState apvts;
@@ -95,14 +137,21 @@ public:
     static constexpr const char* paramManualTempo    = "manualTempo";
 
 private:
-    void handleIncomingCommands();
+    void handleIncomingCommands(juce::MidiBuffer& midiMessages);
     void flushAllNotesOff(juce::MidiBuffer& midiMessages);
+    void updateActivePitchBitmask();
 
     // Lock-free double/triple buffer sequence exchange
     std::shared_ptr<const SequenceSnapshot> activeSequence { nullptr };
     std::atomic<bool> newSequenceAvailable { false };
+    std::atomic<bool> resetPlayheadOnSwap { false };
     std::shared_ptr<const SequenceSnapshot> pendingSequence { nullptr };
     mutable std::mutex sequenceExchangeMutex;
+
+    // Persistent WebUI JSON & library state across editor close/reopen and DAW project saves
+    mutable std::mutex uiStateMutex;
+    juce::String savedUiStateJson;
+    std::vector<ScannedFileMetadata> scannedFilesMetadata;
 
     // Lock-free Command FIFO
     LockFreeCommandQueue<AudioCommand, 128> commandQueue;
@@ -117,12 +166,29 @@ private:
     std::array<ActiveNote, 128> activeNotePool {};
     int activeNoteCount { 0 };
 
+    // One-shot preview audition notes triggered from PianoRoll keys/dragging
+    struct PreviewNote
+    {
+        int channel;
+        int noteNumber;
+        int samplesRemaining;
+    };
+    std::array<PreviewNote, 16> previewNotePool {};
+    int previewNoteCount { 0 };
+
+    // Lock-free bitmask of active MIDI pitches (0..127) for ChordVisualizer telemetry
+    std::atomic<uint64_t> activePitchBitsLow { 0 };
+    std::atomic<uint64_t> activePitchBitsHigh { 0 };
+
     // Playback state atomics
     std::atomic<double> currentPlayheadPpq { 0.0 };
     std::atomic<bool> isPlaying { false };
     std::atomic<double> hostBpm { 120.0 };
     std::atomic<bool> hostIsPlaying { false };
     std::atomic<bool> pendingAllNotesOff { false };
+    std::atomic<int> hostKeyRoot { 0 };
+    std::atomic<bool> hostKeyIsMinor { false };
+    std::atomic<bool> hostKeyDetected { false };
 
     // Cached audio parameters (updated per block)
     std::atomic<float>* transposeParam { nullptr };
@@ -135,6 +201,10 @@ private:
 
     double sampleRate { 44100.0 };
     double lastPpqPosition { 0.0 };
+
+    // Real-time DAW track key signature accumulator
+    std::array<float, 12> dawIncomingPitchClassWeights { 0.0f };
+    int dawIncomingNoteCount { 0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MidiPreviewerAudioProcessor)
 };

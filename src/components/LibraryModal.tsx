@@ -19,6 +19,7 @@ import {
   Music,
   Check,
   Info,
+  Plus,
 } from 'lucide-react';
 
 interface LibraryModalProps {
@@ -201,10 +202,10 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
               onClick={onScanFolderClick}
               disabled={isScanning}
               className="hardware-button flex items-center gap-1.5 px-3 py-1.5 text-xs text-amber-400 rounded-xl font-mono uppercase tracking-wider transition shrink-0"
-              title="Rescan another folder from your computer"
+              title="Add more folders to your library (+)"
             >
-              <FolderOpen className="w-3.5 h-3.5 text-amber-500" />
-              <span>Rescan Folder</span>
+              <Plus className="w-3.5 h-3.5 text-amber-400" />
+              <span>Add Folder</span>
             </button>
             <button
               onClick={onClose}
@@ -324,14 +325,24 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
             <div className="w-64 sm:w-72 bg-[#12141c] border-r border-slate-800/80 overflow-y-auto p-2 flex flex-col gap-1 shrink-0">
               <div className="px-3 py-1.5 text-[10px] font-mono font-bold uppercase text-slate-500 tracking-wider flex items-center justify-between">
                 <span>Folders ({folderList.length})</span>
-                {selectedFolder !== 'ALL' && (
+                <div className="flex items-center gap-1.5">
                   <button
-                    onClick={() => setSelectedFolder('ALL')}
-                    className="text-amber-400 hover:underline text-[9.5px]"
+                    onClick={onScanFolderClick}
+                    className="flex items-center gap-1 text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 px-2 py-0.5 rounded-lg text-[9.5px] font-bold transition shadow-sm"
+                    title="Add more folders to library (+)"
                   >
-                    Reset Filter
+                    <Plus className="w-3 h-3" />
+                    <span>Add</span>
                   </button>
-                )}
+                  {selectedFolder !== 'ALL' && (
+                    <button
+                      onClick={() => setSelectedFolder('ALL')}
+                      className="text-slate-400 hover:text-slate-200 text-[9px] hover:underline"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
               </div>
 
               <button

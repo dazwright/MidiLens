@@ -318,29 +318,43 @@ public:
                           float sliderPos, float minSliderPos, float maxSliderPos,
                           const juce::Slider::SliderStyle sliderStyle, juce::Slider& slider) override
     {
-        juce::ignoreUnused(sliderStyle, minSliderPos, maxSliderPos, slider);
+        juce::ignoreUnused(sliderStyle, minSliderPos, maxSliderPos);
         auto bounds = juce::Rectangle<float>((float)x, (float)y, (float)width, (float)height);
 
-        float trackHeight = 4.0f;
+        float trackHeight = 5.0f;
         float trackY = bounds.getCentreY() - trackHeight * 0.5f;
         auto trackRect = juce::Rectangle<float>(bounds.getX(), trackY, bounds.getWidth(), trackHeight);
 
         // Track background
-        g.setColour(juce::Colour(0xff202636));
-        g.fillRoundedRectangle(trackRect, 2.0f);
+        g.setColour(juce::Colour(0xff0c0e12));
+        g.fillRoundedRectangle(trackRect, 2.5f);
+        g.setColour(juce::Colour(0xff2d3342));
+        g.drawRoundedRectangle(trackRect, 2.5f, 1.0f);
 
-        // Filled value
-        auto filledRect = juce::Rectangle<float>(bounds.getX(), trackY, sliderPos - bounds.getX(), trackHeight);
-        g.setColour(juce::Colour(0xff38bdf8));
-        g.fillRoundedRectangle(filledRect, 2.0f);
+        juce::Colour valColor = juce::Colour(0xff38bdf8);
+        if (slider.getName().containsIgnoreCase("velocity") || slider.getMaximum() <= 1.05)
+            valColor = juce::Colour(0xfffbbf24); // warm amber for velocity
+        else if (slider.getName().containsIgnoreCase("speed") || slider.getName().containsIgnoreCase("tempo"))
+            valColor = juce::Colour(0xfff59e0b);
+        else if (slider.getName().containsIgnoreCase("timing"))
+            valColor = juce::Colour(0xffc084fc);
 
-        // Thumb handle
-        float thumbRadius = 6.0f;
-        g.setColour(juce::Colour(0xffffffff));
-        g.fillEllipse(sliderPos - thumbRadius, bounds.getCentreY() - thumbRadius, thumbRadius * 2.0f, thumbRadius * 2.0f);
+        // Filled active track
+        float fillW = std::max(0.0f, sliderPos - bounds.getX());
+        auto filledRect = juce::Rectangle<float>(bounds.getX(), trackY, fillW, trackHeight);
+        g.setColour(valColor);
+        g.fillRoundedRectangle(filledRect, 2.5f);
 
-        g.setColour(juce::Colour(0xff38bdf8));
-        g.drawEllipse(sliderPos - thumbRadius, bounds.getCentreY() - thumbRadius, thumbRadius * 2.0f, thumbRadius * 2.0f, 1.5f);
+        // Thumb handle (tactile aluminum slider cap)
+        float thumbRadius = 7.0f;
+        auto thumbBounds = juce::Rectangle<float>(sliderPos - thumbRadius, bounds.getCentreY() - thumbRadius, thumbRadius * 2.0f, thumbRadius * 2.0f);
+        juce::ColourGradient thumbGrad(juce::Colour(0xff3d4452), thumbBounds.getX(), thumbBounds.getY(),
+                                       juce::Colour(0xff1a1d24), thumbBounds.getRight(), thumbBounds.getBottom(), false);
+        g.setGradientFill(thumbGrad);
+        g.fillEllipse(thumbBounds);
+
+        g.setColour(valColor);
+        g.drawEllipse(thumbBounds, 1.5f);
     }
 };
 

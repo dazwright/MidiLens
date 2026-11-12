@@ -15,17 +15,29 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
     add_compile_options(-Wno-nontrivial-memcall -Wno-deprecated-declarations)
 endif()
 
-# Fetch or locate JUCE (supports both local add_subdirectory or CMake FetchContent)
+# Fetch or locate JUCE 8
 include(FetchContent)
 FetchContent_Declare(
     JUCE
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-    GIT_TAG        8.0.4 # or 7.0.12
+    GIT_TAG        8.0.4
     GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(JUCE)
 
-# Declare JUCE Plugin with AU, VST3, Standalone, and legacy VST (if Steinberg VST2 SDK is provided)
+# Embed self-contained offline React + Tailwind v4 WebUI assets directly into the C++ binary
+# Zero Node/npm, zero internet/CDNs, and zero external file paths required inside Logic Pro's sandbox
+juce_add_binary_data(MidiLensWebUIData
+    HEADER_NAME "WebUIData.h"
+    NAMESPACE   "WebUIData"
+    SOURCES
+        WebUI/index.html
+        WebUI/app.css
+        WebUI/app.js
+        WebUI/icon.svg
+)
+
+# Declare JUCE Plugin with AU, VST3, and Standalone
 # NOTE: For Logic Pro MIDI FX, FORMATS must include AU, and the target must be configured with IS_MIDI_EFFECT TRUE.
 juce_add_plugin(MidiPreviewer
     COMPANY_NAME                "AudioDSP"
@@ -36,15 +48,10 @@ juce_add_plugin(MidiPreviewer
     EDITOR_WANTS_KEYBOARD_FOCUS TRUE
     PLUGIN_MANUFACTURER_CODE    "Adsp"
     PLUGIN_CODE                 "MPrv"
-    FORMATS                     AU VST3 Standalone # Add VST if VST2 SDK is present
+    FORMATS                     AU VST3 Standalone
     PRODUCT_NAME                "MidiLens"
     DESCRIPTION                 "MidiLens real-time MIDI auditioning, scale lock & FX suite"
 )
-
-# Crucial AudioUnit property for Apple Logic Pro:
-# Logic Pro specifically looks for 'aumf' (AudioUnit MIDI Effect) components
-# placed in the MIDI FX slot ahead of software instruments.
-# JUCE automatically maps IS_MIDI_EFFECT to 'aumf' for AU plugins when audio I/O is disabled.
 
 target_sources(MidiPreviewer
     PRIVATE
@@ -66,15 +73,20 @@ target_sources(MidiPreviewer
 
 target_compile_definitions(MidiPreviewer
     PUBLIC
-        JUCE_WEB_BROWSER=0
+        JUCE_WEB_BROWSER=1
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
         JUCE_REPORT_APP_USAGE=0
         JUCE_STRICT_REFCOUNTEDPOINTER=1
 )
 
+if(WIN32)
+    target_compile_definitions(MidiPreviewer PUBLIC JUCE_USE_WIN_WEBVIEW2=1)
+endif()
+
 target_link_libraries(MidiPreviewer
     PRIVATE
+        MidiLensWebUIData
         juce::juce_audio_basics
         juce::juce_audio_devices
         juce::juce_audio_formats
@@ -92,10 +104,10 @@ target_link_libraries(MidiPreviewer
         juce::juce_recommended_lto_flags
 )
 
-# Custom post-build logic for macOS AU installation and validation
+# Custom configuration for macOS AU WebKit linkage & hardened runtime compatibility
 if(APPLE)
     target_compile_options(MidiPreviewer PRIVATE -Wno-deprecated-declarations -Wno-nontrivial-memcall)
-    # Enable hardened runtime for modern macOS / Logic Pro notarization compatibility
+    target_link_libraries(MidiPreviewer PRIVATE "-framework WebKit")
     set_target_properties(MidiPreviewer PROPERTIES
         XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME "YES"
     )

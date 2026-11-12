@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { MidiSequence, PluginParameters } from '../types';
 import { serializeMidiFile } from '../midiParser';
 import { arpeggiateNotes } from '../arpUtils';
+import { isJuceNative, emitToJuce, uint8ArrayToBase64 } from '../juceBridge';
 import { Download, FileMusic, X, Check, Layers, Disc, Settings2 } from 'lucide-react';
 
 interface MidiExportModalProps {
@@ -55,11 +56,22 @@ export const MidiExportModal: React.FC<MidiExportModalProps> = ({
       trackName: sequence.name,
     });
 
+    const finalFilename = filename.endsWith('.mid') ? filename : `${filename}.mid`;
+
+    if (isJuceNative()) {
+      emitToJuce('nativeSaveMidi', {
+        filename: finalFilename,
+        base64: uint8ArrayToBase64(binaryData),
+      });
+      onClose();
+      return;
+    }
+
     const blob = new Blob([binaryData.buffer as ArrayBuffer], { type: 'audio/midi' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = filename.endsWith('.mid') ? filename : `${filename}.mid`;
+    link.download = finalFilename;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

@@ -156,18 +156,34 @@ export const CodeExplorer: React.FC = () => {
 
         {/* Code Content with Line Numbers */}
         <div className="flex-1 overflow-auto p-4 font-mono text-xs text-zinc-300 leading-relaxed bg-[#0b0c0e]">
-          <pre className="select-text">
-            <code>
-              {selectedFile.content.split('\n').map((line, idx) => (
-                <div key={idx} className="table-row hover:bg-zinc-900/50">
-                  <span className="table-cell select-none pr-4 text-right text-zinc-600 w-10">
-                    {idx + 1}
-                  </span>
-                  <span className="table-cell whitespace-pre">{line}</span>
-                </div>
-              ))}
-            </code>
-          </pre>
+          {selectedFile.content.length > 100000 ? (
+            <div className="space-y-3 text-zinc-400">
+              <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300">
+                Pre-compiled production asset ({(selectedFile.content.length / 1024).toFixed(1)} KB) — automatically included in full inside{' '}
+                <strong>MidiLens_JUCE_Project.zip</strong> under <code>{selectedFile.path}</code> and embedded into the AU binary via{' '}
+                <code>juce_add_binary_data</code>.
+              </div>
+              <pre className="select-text whitespace-pre-wrap break-all text-zinc-500">
+                {selectedFile.content.slice(0, 4000)}
+                {'\n\n/* ... truncated in preview (' +
+                  (selectedFile.content.length / 1024).toFixed(1) +
+                  ' KB total packaged in ZIP) ... */'}
+              </pre>
+            </div>
+          ) : (
+            <pre className="select-text">
+              <code>
+                {selectedFile.content.split('\n').map((line, idx) => (
+                  <div key={idx} className="table-row hover:bg-zinc-900/50">
+                    <span className="table-cell select-none pr-4 text-right text-zinc-600 w-10">
+                      {idx + 1}
+                    </span>
+                    <span className="table-cell whitespace-pre">{line}</span>
+                  </div>
+                ))}
+              </code>
+            </pre>
+          )}
         </div>
       </div>
     </div>

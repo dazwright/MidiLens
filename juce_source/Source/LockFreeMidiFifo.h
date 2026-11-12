@@ -47,9 +47,11 @@ enum class AudioCommandType
 {
     None = 0,
     StartPlayback,
+    PausePlayback,
     StopPlayback,
     SeekPositionPpq,
     AllNotesOff,
+    TriggerPreviewNote,
     UpdateParameters
 };
 
