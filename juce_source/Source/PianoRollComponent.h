@@ -51,6 +51,9 @@ public:
     bool isPitchInActiveScale(int pitch) const;
     int snapPitchToActiveScale(int pitch) const;
 
+    // Time Signature
+    void setTimeSignature(int numerator, int denominator);
+
     // Zoom and Length Manipulation
     void setZoom(float newZoomX, float newZoomY);
     void doubleSequenceLength();
@@ -94,6 +97,10 @@ private:
     int scaleRoot { 0 }; // 0 = C
     MusicalScale currentScale { MusicalScale::NaturalMinor };
     bool scaleLockActive { true };
+
+    // Time Signature parameters
+    int timeSigNumerator { 4 };
+    int timeSigDenominator { 4 };
 
     // Viewport, zoom and coordinate mapping
     float zoomX { 1.0f };

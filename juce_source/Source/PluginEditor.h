@@ -58,6 +58,7 @@ private:
     juce::Label bpmDisplayLabel;
     juce::Slider manualTempoSlider;
     juce::Label manualTempoLabel;
+    juce::ComboBox timeSigSelector;
 
     // Scale & Quantize Controls
     juce::ComboBox scaleRootSelector;

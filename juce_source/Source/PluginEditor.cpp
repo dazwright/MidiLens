@@ -426,6 +426,25 @@ void MidiPreviewerAudioProcessorEditor::setupCustomStyling()
     manualTempoSlider.setTextValueSuffix(" BPM");
     manualTempoSlider.setTooltip("Manual Tempo (Active when not synced to DAW)");
 
+    // Time Signature Selector
+    addAndMakeVisible(timeSigSelector);
+    timeSigSelector.addItemList(juce::StringArray { "4/4", "3/4", "2/4", "6/8", "12/8", "5/4", "7/8", "9/8" }, 1);
+    timeSigSelector.setSelectedId(1, juce::dontSendNotification);
+    timeSigSelector.setTooltip("Select musical time signature / meter");
+    timeSigSelector.onChange = [this]() {
+        int id = timeSigSelector.getSelectedId();
+        int num = 4, den = 4;
+        if (id == 1) { num = 4; den = 4; }
+        else if (id == 2) { num = 3; den = 4; }
+        else if (id == 3) { num = 2; den = 4; }
+        else if (id == 4) { num = 6; den = 8; }
+        else if (id == 5) { num = 12; den = 8; }
+        else if (id == 6) { num = 5; den = 4; }
+        else if (id == 7) { num = 7; den = 8; }
+        else if (id == 8) { num = 9; den = 8; }
+        pianoRoll.setTimeSignature(num, den);
+    };
+
     // Scale Controls
     addAndMakeVisible(scaleRootSelector);
     scaleRootSelector.addItemList(juce::StringArray { "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B" }, 1);
@@ -597,7 +616,8 @@ void MidiPreviewerAudioProcessorEditor::resized()
 
     syncModeSelector.setBounds(514, libBarY + 4, 115, 26);
     manualTempoSlider.setBounds(634, libBarY + 4, 95, 26);
-    bpmDisplayLabel.setBounds(734, libBarY + 4, 75, 26);
+    bpmDisplayLabel.setBounds(734, libBarY + 4, 65, 26);
+    timeSigSelector.setBounds(805, libBarY + 4, 65, 26);
 
     // ==========================================
     // ROW 3: SCALE SYNC & QUANTIZE

@@ -100,6 +100,13 @@ void PianoRollComponent::setScale(int rootPitch, MusicalScale scale, bool enable
     repaint();
 }
 
+void PianoRollComponent::setTimeSignature(int numerator, int denominator)
+{
+    timeSigNumerator = std::max(1, numerator);
+    timeSigDenominator = std::max(1, denominator);
+    repaint();
+}
+
 bool PianoRollComponent::isPitchInActiveScale(int pitch) const
 {
     if (currentScale == MusicalScale::Chromatic)
@@ -314,13 +321,15 @@ void PianoRollComponent::drawRuler(juce::Graphics& g, juce::Rectangle<int> area)
 
     float currentPixelsPerPpq = basePixelsPerPpq * zoomX;
     double totalPpq = (currentSnapshot != nullptr) ? currentSnapshot->totalLengthPpq : 16.0;
-    int numBars = static_cast<int>(std::ceil(totalPpq / 4.0)) + 2;
+    double barPpq = static_cast<double>(timeSigNumerator) * (4.0 / static_cast<double>(timeSigDenominator));
+    double beatPpq = 4.0 / static_cast<double>(timeSigDenominator);
+    int numBars = static_cast<int>(std::ceil(totalPpq / barPpq)) + 2;
 
     g.setFont(juce::Font(11.0f, juce::Font::bold));
 
     for (int bar = 0; bar <= numBars; ++bar)
     {
-        float x = pianoKeysWidth + static_cast<float>(bar * 4.0) * currentPixelsPerPpq;
+        float x = pianoKeysWidth + static_cast<float>(static_cast<double>(bar) * barPpq) * currentPixelsPerPpq;
         if (x > area.getRight())
             break;
 
@@ -330,9 +339,9 @@ void PianoRollComponent::drawRuler(juce::Graphics& g, juce::Rectangle<int> area)
         g.setColour(juce::Colour(0xff94a3b8));
         g.drawText(juce::String(bar + 1), static_cast<int>(x) + 4, area.getY() + 2, 30, 16, juce::Justification::left);
 
-        for (int beat = 1; beat < 4; ++beat)
+        for (int beat = 1; beat < timeSigNumerator; ++beat)
         {
-            float beatX = x + static_cast<float>(beat) * currentPixelsPerPpq;
+            float beatX = x + static_cast<float>(static_cast<double>(beat) * beatPpq) * currentPixelsPerPpq;
             if (beatX < area.getRight())
             {
                 g.setColour(juce::Colour(0xff3f4553));
@@ -388,17 +397,19 @@ void PianoRollComponent::drawGrid(juce::Graphics& g, juce::Rectangle<int> area)
 
     float currentPixelsPerPpq = basePixelsPerPpq * zoomX;
     double totalPpq = (currentSnapshot != nullptr) ? currentSnapshot->totalLengthPpq : 16.0;
-    int numBars = static_cast<int>(std::ceil(totalPpq / 4.0)) + 2;
+    double barPpq = static_cast<double>(timeSigNumerator) * (4.0 / static_cast<double>(timeSigDenominator));
+    double beatPpq = 4.0 / static_cast<double>(timeSigDenominator);
+    int numBars = static_cast<int>(std::ceil(totalPpq / barPpq)) + 2;
 
     for (int bar = 0; bar <= numBars; ++bar)
     {
-        float x = pianoKeysWidth + static_cast<float>(bar * 4.0) * currentPixelsPerPpq;
+        float x = pianoKeysWidth + static_cast<float>(static_cast<double>(bar) * barPpq) * currentPixelsPerPpq;
         g.setColour(juce::Colour(0xff23422e));
         g.drawVerticalLine(static_cast<int>(x), static_cast<float>(area.getY()), static_cast<float>(area.getBottom()));
 
-        for (int beat = 1; beat < 4; ++beat)
+        for (int beat = 1; beat < timeSigNumerator; ++beat)
         {
-            float beatX = x + static_cast<float>(beat) * currentPixelsPerPpq;
+            float beatX = x + static_cast<float>(static_cast<double>(beat) * beatPpq) * currentPixelsPerPpq;
             g.setColour(juce::Colour(0xff122318));
             g.drawVerticalLine(static_cast<int>(beatX), static_cast<float>(area.getY()), static_cast<float>(area.getBottom()));
         }
