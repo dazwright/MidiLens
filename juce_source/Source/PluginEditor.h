@@ -46,6 +46,7 @@ private:
     void handleSaveUiState(const juce::var& rawPayload);
 
     void scanDirectoryAsync(const juce::File& directory);
+    void scanDirectoriesAsync(const juce::Array<juce::File>& directories);
     void loadAndEmitSingleFile(const juce::File& midiFile, const juce::String& sourceType, int index);
 
     MidiPreviewerAudioProcessor& audioProcessor;

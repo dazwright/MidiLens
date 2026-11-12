@@ -295,17 +295,30 @@ void MidiPreviewerAudioProcessorEditor::handleAuditionNote(const juce::var& rawP
 
 void MidiPreviewerAudioProcessorEditor::scanDirectoryAsync(const juce::File& directory)
 {
+    scanDirectoriesAsync(juce::Array<juce::File>{ directory });
+}
+
+void MidiPreviewerAudioProcessorEditor::scanDirectoriesAsync(const juce::Array<juce::File>& directories)
+{
     auto safeThis = juce::Component::SafePointer<MidiPreviewerAudioProcessorEditor>(this);
-    juce::Thread::launch([safeThis, directory]()
+    juce::Thread::launch([safeThis, directories]()
     {
-        auto midiFiles = MidiPreviewerAudioProcessor::scanFolderForMidiFiles(directory, true);
+        juce::Array<juce::File> allMidiFiles;
+        for (const auto& dir : directories)
+        {
+            if (dir.isDirectory())
+            {
+                auto subFiles = MidiPreviewerAudioProcessor::scanFolderForMidiFiles(dir, true);
+                allMidiFiles.addArray(subFiles);
+            }
+        }
 
         std::vector<ScannedFileMetadata> metadataList;
-        metadataList.reserve(static_cast<size_t>(midiFiles.size()));
+        metadataList.reserve(static_cast<size_t>(allMidiFiles.size()));
 
-        const juce::File parentRoot = directory.getParentDirectory();
-        for (const auto& f : midiFiles)
+        for (const auto& f : allMidiFiles)
         {
+            const juce::File parentRoot = f.getParentDirectory();
             ScannedFileMetadata meta;
             meta.name = f.getFileName();
             meta.relativePath = f.getRelativePathFrom(parentRoot).replaceCharacter('\\', '/');
@@ -316,14 +329,18 @@ void MidiPreviewerAudioProcessorEditor::scanDirectoryAsync(const juce::File& dir
 
         juce::String firstBase64;
         juce::String firstName;
-        if (!midiFiles.isEmpty())
+        if (!allMidiFiles.isEmpty())
         {
-            firstName = midiFiles[0].getFileName();
-            firstBase64 = loadFileToBase64(midiFiles[0]);
+            firstName = allMidiFiles[0].getFileName();
+            firstBase64 = loadFileToBase64(allMidiFiles[0]);
         }
 
+        juce::String labelName = directories.size() == 1
+            ? directories[0].getFileName()
+            : (juce::String(directories.size()) + " Selected Folders");
+
         juce::MessageManager::callAsync([safeThis,
-                                         folderName = directory.getFileName(),
+                                         folderName = labelName,
                                          metadataList = std::move(metadataList),
                                          firstBase64,
                                          firstName]()
@@ -365,19 +382,21 @@ void MidiPreviewerAudioProcessorEditor::scanDirectoryAsync(const juce::File& dir
 void MidiPreviewerAudioProcessorEditor::handleNativeScanFolder()
 {
     activeFileChooser = std::make_shared<juce::FileChooser>(
-        "Select a Folder Containing MIDI Files",
+        "Select Folder(s) Containing MIDI Files",
         juce::File::getSpecialLocation(juce::File::userMusicDirectory));
 
     auto safeThis = juce::Component::SafePointer<MidiPreviewerAudioProcessorEditor>(this);
-    const int flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories;
+    const int flags = juce::FileBrowserComponent::openMode
+                    | juce::FileBrowserComponent::canSelectDirectories
+                    | juce::FileBrowserComponent::canSelectMultipleItems;
 
     activeFileChooser->launchAsync(flags, [safeThis](const juce::FileChooser& fc)
     {
         if (safeThis == nullptr)
             return;
 
-        const juce::File chosen = fc.getResult();
-        if (!chosen.isDirectory())
+        const auto results = fc.getResults();
+        if (results.isEmpty())
         {
             juce::DynamicObject::Ptr cancelObj = new juce::DynamicObject();
             cancelObj->setProperty("canceled", true);
@@ -386,7 +405,7 @@ void MidiPreviewerAudioProcessorEditor::handleNativeScanFolder()
             return;
         }
 
-        safeThis->scanDirectoryAsync(chosen);
+        safeThis->scanDirectoriesAsync(results);
     });
 }
 
@@ -551,19 +570,24 @@ bool MidiPreviewerAudioProcessorEditor::isInterestedInFileDrag(const juce::Strin
 
 void MidiPreviewerAudioProcessorEditor::filesDropped(const juce::StringArray& files, int /*x*/, int /*y*/)
 {
+    juce::Array<juce::File> dirsToScan;
     for (const auto& path : files)
     {
         const juce::File f(path);
         if (f.isDirectory())
         {
-            scanDirectoryAsync(f);
-            return;
+            dirsToScan.add(f);
         }
-        if (f.existsAsFile() && (path.endsWithIgnoreCase(".mid") || path.endsWithIgnoreCase(".midi")))
+        else if (f.existsAsFile() && (path.endsWithIgnoreCase(".mid") || path.endsWithIgnoreCase(".midi")))
         {
             loadAndEmitSingleFile(f, "custom", -1);
             return;
         }
+    }
+
+    if (!dirsToScan.isEmpty())
+    {
+        scanDirectoriesAsync(dirsToScan);
     }
 }
 
