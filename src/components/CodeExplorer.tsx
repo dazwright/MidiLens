@@ -32,10 +32,13 @@ export const CodeExplorer: React.FC = () => {
       const folder = zip.folder('MidiLens_JUCE_Project');
 
       for (const f of JUCE_CODE_FILES) {
-        folder?.file(f.path, f.content);
+        const isExec = f.path.endsWith('.sh') || f.path.endsWith('.command');
+        folder?.file(f.path, f.content, {
+          unixPermissions: isExec ? 0o755 : 0o644,
+        });
       }
 
-      const content = await zip.generateAsync({ type: 'blob' });
+      const content = await zip.generateAsync({ type: 'blob', platform: 'UNIX' });
       const url = URL.createObjectURL(content);
       const a = document.createElement('a');
       a.href = url;

@@ -168,14 +168,13 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& /*buffe
     {
         if (auto posOpt = playHead->getPosition())
         {
-            if (posOpt->getBpm().hasValue())
-                currentBpm = *posOpt->getBpm();
+            if (auto bpm = posOpt->getBpm())
+                currentBpm = *bpm;
 
-            if (posOpt->getIsPlaying().hasValue())
-                isHostPlayingNow = *posOpt->getIsPlaying();
+            isHostPlayingNow = posOpt->getIsPlaying();
 
-            if (posOpt->getPpqPosition().hasValue())
-                hostPpq = *posOpt->getPpqPosition();
+            if (auto ppq = posOpt->getPpqPosition())
+                hostPpq = *ppq;
         }
     }
 

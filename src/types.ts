@@ -82,7 +82,7 @@ export interface CodeFileEntry {
   filename: string;
   path: string;
   language: string;
-  category: 'Configuration' | 'Processor DSP' | 'Analysis DSP' | 'GUI Canvas' | 'Export / I/O' | 'Documentation';
+  category: 'Configuration' | 'Processor DSP' | 'Analysis DSP' | 'GUI Canvas' | 'Export / I/O' | 'Documentation' | 'Install Script';
   description: string;
   content: string;
 }

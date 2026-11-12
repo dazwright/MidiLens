@@ -15,8 +15,53 @@ import exporterCpp from '../juce_source/Source/MidiFileExporter.cpp?raw';
 import cmakeLists from '../juce_source/CMakeLists.txt?raw';
 import readmeMd from '../juce_source/README.md?raw';
 import githubWorkflowYml from '../juce_source/.github/workflows/build.yml?raw';
+import installLocalAuSh from '../juce_source/install_local_au.sh?raw';
+import installAuCommand from '../juce_source/install_au.command?raw';
+import chordDetectorH from '../juce_source/Source/ChordDetector.h?raw';
+import arpEngineH from '../juce_source/Source/ArpEngine.h?raw';
+import midiLensLookAndFeelH from '../juce_source/Source/MidiLensLookAndFeel.h?raw';
 
 export const JUCE_CODE_FILES: CodeFileEntry[] = [
+  {
+    filename: 'MidiLensLookAndFeel.h',
+    path: 'Source/MidiLensLookAndFeel.h',
+    language: 'cpp',
+    category: 'GUI Canvas',
+    description: 'Custom Analog Hybrid Studio Rack JUCE LookAndFeel styling gunmetal chassis buttons, incandescent play indicators, dark stamped comboboxes, and milled rotary knobs.',
+    content: midiLensLookAndFeelH,
+  },
+  {
+    filename: 'ChordDetector.h',
+    path: 'Source/ChordDetector.h',
+    language: 'cpp',
+    category: 'Analysis DSP',
+    description: 'Header for real-time chord detection engine matching the interactive visualizer in the plugin simulator.',
+    content: chordDetectorH,
+  },
+  {
+    filename: 'ArpEngine.h',
+    path: 'Source/ArpEngine.h',
+    language: 'cpp',
+    category: 'Processor DSP',
+    description: 'Arpeggiator engine generating Up, Down, Up/Down, Random, and Chord sequences across 1-4 octaves.',
+    content: arpEngineH,
+  },
+  {
+    filename: 'install_au.command',
+    path: 'install_au.command',
+    language: 'bash',
+    category: 'Install Script',
+    description: 'Double-clickable macOS Finder command to build and install MidiLens AU into ~/Library/Audio/Plug-Ins/Components/ without an Apple Developer account.',
+    content: installAuCommand,
+  },
+  {
+    filename: 'install_local_au.sh',
+    path: 'install_local_au.sh',
+    language: 'bash',
+    category: 'Install Script',
+    description: '1-click Terminal script to configure CMake, compile AU, ad-hoc codesign, strip quarantine, and reset macOS AudioComponentRegistrar.',
+    content: installLocalAuSh,
+  },
   {
     filename: 'build.yml',
     path: '.github/workflows/build.yml',
@@ -62,7 +107,7 @@ export const JUCE_CODE_FILES: CodeFileEntry[] = [
     path: 'Source/PianoRollComponent.cpp',
     language: 'cpp',
     category: 'GUI Canvas',
-    description: 'Implementation of piano roll with out-of-scale graying, drag-restriction, and velocity color mapping (light green to red).',
+    description: 'Implementation of Phosphor CRT lab piano roll with deep night-green background (#070d09), flat rectangular phosphor green/amber note traces, and glowing playhead.',
     content: pianoRollCpp,
   },
   {
@@ -94,7 +139,7 @@ export const JUCE_CODE_FILES: CodeFileEntry[] = [
     path: 'Source/PluginEditor.cpp',
     language: 'cpp',
     category: 'GUI Canvas',
-    description: 'Implementation of the modern UI with drag-to-DAW export, scale lock, zoom, and folder scanning integration.',
+    description: 'Implementation of the Neve/SSL analog studio rack UI with dark anodized chassis, corner Allen screws, milled brandplate, and drag-to-DAW export.',
     content: editorCpp,
   },
   {

@@ -53,6 +53,18 @@ jobs:
           name: MidiLens-macOS-Installer
           path: MidiLens-macOS-Universal.pkg
 
+      - name: Upload macOS AU Component (.component)
+        uses: actions/upload-artifact@v4
+        with:
+          name: MidiLens-AU-Component
+          path: build/MidiPreviewer_artefacts/Release/AU/MidiLens.component
+
+      - name: Upload macOS VST3 (.vst3)
+        uses: actions/upload-artifact@v4
+        with:
+          name: MidiLens-macOS-VST3
+          path: build/MidiPreviewer_artefacts/Release/VST3/MidiLens.vst3
+
   build-windows:
     name: Build Windows x64 (VST3 + Standalone)
     runs-on: windows-2022

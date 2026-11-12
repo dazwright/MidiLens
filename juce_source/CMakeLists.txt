@@ -5,10 +5,14 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# macOS Universal Binary configuration (Apple Silicon M1/M2/M3/M4 & Intel x86_64)
+# macOS configuration: target macOS 11.0+ and native architecture for local builds
 if(APPLE)
-    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Build universal binary for macOS" FORCE)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS deployment target" FORCE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS deployment target")
+endif()
+
+# Suppress harmless third-party diagnostics from bundled libraries (e.g., HarfBuzz in juce_graphics on Apple Clang)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
+    add_compile_options(-Wno-nontrivial-memcall -Wno-deprecated-declarations)
 endif()
 
 # Fetch or locate JUCE (supports both local add_subdirectory or CMake FetchContent)
@@ -55,6 +59,9 @@ target_sources(MidiPreviewer
         Source/LockFreeMidiFifo.h
         Source/MidiFileExporter.h
         Source/MidiFileExporter.cpp
+        Source/ChordDetector.h
+        Source/ArpEngine.h
+        Source/MidiLensLookAndFeel.h
 )
 
 target_compile_definitions(MidiPreviewer
@@ -62,7 +69,6 @@ target_compile_definitions(MidiPreviewer
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
-        JUCE_DISPLAY_SPLASH_SCREEN=0
         JUCE_REPORT_APP_USAGE=0
         JUCE_STRICT_REFCOUNTEDPOINTER=1
 )
@@ -84,11 +90,11 @@ target_link_libraries(MidiPreviewer
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
-        juce::juce_recommended_warning_flags
 )
 
 # Custom post-build logic for macOS AU installation and validation
 if(APPLE)
+    target_compile_options(MidiPreviewer PRIVATE -Wno-deprecated-declarations -Wno-nontrivial-memcall)
     # Enable hardened runtime for modern macOS / Logic Pro notarization compatibility
     set_target_properties(MidiPreviewer PROPERTIES
         XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME "YES"

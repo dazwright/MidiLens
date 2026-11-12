@@ -1,1 +1,53 @@
 @import "tailwindcss";
+
+@layer utilities {
+  .crt-screen {
+    background-color: #070d09;
+    background-image: 
+      linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.4) 50%),
+      linear-gradient(90deg, rgba(255, 0, 0, 0.03), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.03));
+    background-size: 100% 3px, 6px 100%;
+    box-shadow: inset 0 0 25px rgba(0, 0, 0, 0.9), inset 0 1px 1px rgba(255, 255, 255, 0.1);
+  }
+
+  .phosphor-glow-green {
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.6), 0 0 16px rgba(16, 185, 129, 0.25);
+  }
+
+  .phosphor-glow-amber {
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.7), 0 0 16px rgba(217, 119, 6, 0.3);
+  }
+
+  .chassis-bevel {
+    border-top: 1px solid rgba(255, 255, 255, 0.15);
+    border-bottom: 2px solid rgba(0, 0, 0, 0.8);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+
+  .rack-recess {
+    background-color: #101215;
+    border: 1px solid rgba(64, 64, 64, 0.7);
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.8), 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+
+  .hardware-button {
+    background: linear-gradient(180deg, #2a2d33 0%, #1e2025 100%);
+    border: 1px solid #3d414a;
+    border-top: 1px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  }
+
+  .hardware-button:active {
+    background: linear-gradient(180deg, #181a1e 0%, #222429 100%);
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.8);
+    transform: translateY(1px);
+  }
+
+  .silkscreen-label {
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: #8e95a0;
+  }
+}

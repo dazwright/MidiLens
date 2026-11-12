@@ -68,7 +68,7 @@ juce::File MidiFileExporter::writeToTempFile(const SequenceSnapshot& snapshot, c
 
     // End of Track Meta Event
     double lastTimestamp = trackSequence.getEndTime() + 960.0;
-    trackSequence.addEvent(juce::MidiMessage::endOfTrackMetaEvent(), lastTimestamp);
+    trackSequence.addEvent(juce::MidiMessage::endOfTrack(), lastTimestamp);
 
     midiFile.addTrack(trackSequence);
 

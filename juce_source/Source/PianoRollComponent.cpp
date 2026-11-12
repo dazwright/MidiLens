@@ -1,4 +1,5 @@
 #include "PianoRollComponent.h"
+#include "KeyDetector.h"
 #include <algorithm>
 #include <cmath>
 
@@ -279,10 +280,12 @@ juce::Colour PianoRollComponent::getVelocityColour(float velocity) const
 
 void PianoRollComponent::paint(juce::Graphics& g)
 {
-    g.fillAll(juce::Colour(0xff0c0d11));
+    // Authentic Phosphor CRT Screen Background
+    g.fillAll(juce::Colour(0xff070d09));
 
     auto bounds = getLocalBounds();
     auto rulerBounds = bounds.removeFromTop(rulerHeight);
+    auto velBounds = bounds.removeFromBottom(velocityBarHeight);
     auto keysBounds = bounds.removeFromLeft(pianoKeysWidth);
     auto gridBounds = bounds;
 
@@ -291,6 +294,7 @@ void PianoRollComponent::paint(juce::Graphics& g)
     drawNotes(g, gridBounds);
     drawPlayhead(g, gridBounds);
     drawRuler(g, rulerBounds);
+    drawVelocityHeatmap(g, velBounds);
 
     if (currentDragMode == DragMode::MarqueeSelect && !marqueeRect.isEmpty())
     {
@@ -312,7 +316,7 @@ void PianoRollComponent::drawRuler(juce::Graphics& g, juce::Rectangle<int> area)
     double totalPpq = (currentSnapshot != nullptr) ? currentSnapshot->totalLengthPpq : 16.0;
     int numBars = static_cast<int>(std::ceil(totalPpq / 4.0)) + 2;
 
-    g.setFont(juce::FontOptions(11.0f).withStyle("Bold"));
+    g.setFont(juce::Font(11.0f, juce::Font::bold));
 
     for (int bar = 0; bar <= numBars; ++bar)
     {
@@ -343,7 +347,7 @@ void PianoRollComponent::drawRuler(juce::Graphics& g, juce::Rectangle<int> area)
     g.setColour(juce::Colour(0xfff59e0b));
     g.fillRoundedRectangle(handleRect, 3.0f);
     g.setColour(juce::Colour(0xff18181b));
-    g.setFont(juce::FontOptions(9.0f).withStyle("Bold"));
+    g.setFont(juce::Font(9.0f, juce::Font::bold));
     g.drawText("END", handleRect, juce::Justification::centred);
 }
 
@@ -358,31 +362,26 @@ void PianoRollComponent::drawGrid(juce::Graphics& g, juce::Rectangle<int> area)
 
         if (!inScale && currentScale != MusicalScale::Chromatic)
         {
-            // Out of scale lane: Grayed out and darkened
-            g.setColour(juce::Colour(0xff090a0d));
+            // Out of scale lane: Clean, deep night-green/obsidian phosphor black
+            g.setColour(isBlackKey ? juce::Colour(0xff040705) : juce::Colour(0xff060a07));
             g.fillRect(static_cast<float>(area.getX()), y, static_cast<float>(area.getWidth()), noteHeightPixels);
-
-            // Subtle diagonal hatch lines
-            g.setColour(juce::Colour(0xff13141a));
-            for (float hx = static_cast<float>(area.getX()); hx < area.getRight(); hx += 16.0f)
-            {
-                g.drawLine(hx, y + noteHeightPixels, hx + 12.0f, y, 1.0f);
-            }
         }
         else
         {
-            g.setColour(isBlackKey ? juce::Colour(0xff13151a) : juce::Colour(0xff191b22));
+            // In scale lane: Deep phosphor night-green CRT matrix
+            g.setColour(isBlackKey ? juce::Colour(0xff09130d) : juce::Colour(0xff0c1911));
             g.fillRect(static_cast<float>(area.getX()), y, static_cast<float>(area.getWidth()), noteHeightPixels);
         }
 
         if (semitone == 0)
         {
-            g.setColour(juce::Colour(0xff384252));
+            // Octave divider line (Phosphor green accent)
+            g.setColour(juce::Colour(0xff22422d));
             g.drawHorizontalLine(static_cast<int>(y + noteHeightPixels), static_cast<float>(area.getX()), static_cast<float>(area.getRight()));
         }
         else
         {
-            g.setColour(inScale ? juce::Colour(0xff21252d) : juce::Colour(0xff15171d));
+            g.setColour(inScale ? juce::Colour(0xff142419) : juce::Colour(0xff09110c));
             g.drawHorizontalLine(static_cast<int>(y + noteHeightPixels), static_cast<float>(area.getX()), static_cast<float>(area.getRight()));
         }
     }
@@ -394,13 +393,13 @@ void PianoRollComponent::drawGrid(juce::Graphics& g, juce::Rectangle<int> area)
     for (int bar = 0; bar <= numBars; ++bar)
     {
         float x = pianoKeysWidth + static_cast<float>(bar * 4.0) * currentPixelsPerPpq;
-        g.setColour(juce::Colour(0xff384252));
+        g.setColour(juce::Colour(0xff23422e));
         g.drawVerticalLine(static_cast<int>(x), static_cast<float>(area.getY()), static_cast<float>(area.getBottom()));
 
         for (int beat = 1; beat < 4; ++beat)
         {
             float beatX = x + static_cast<float>(beat) * currentPixelsPerPpq;
-            g.setColour(juce::Colour(0xff20242f));
+            g.setColour(juce::Colour(0xff122318));
             g.drawVerticalLine(static_cast<int>(beatX), static_cast<float>(area.getY()), static_cast<float>(area.getBottom()));
         }
     }
@@ -413,16 +412,16 @@ void PianoRollComponent::drawGrid(juce::Graphics& g, juce::Rectangle<int> area)
     // Shading beyond end
     if (lengthX < area.getRight())
     {
-        g.setColour(juce::Colour(0x66000000));
+        g.setColour(juce::Colour(0x88000000));
         g.fillRect(lengthX, static_cast<float>(area.getY()), area.getRight() - lengthX, static_cast<float>(area.getHeight()));
     }
 }
 
 void PianoRollComponent::drawPianoKeys(juce::Graphics& g, juce::Rectangle<int> area)
 {
-    g.setColour(juce::Colour(0xff14161d));
+    g.setColour(juce::Colour(0xff09110c));
     g.fillRect(area);
-    g.setFont(juce::FontOptions(9.0f));
+    g.setFont(juce::Font(9.0f));
 
     for (int p = minPitch; p <= maxPitch; ++p)
     {
@@ -433,34 +432,34 @@ void PianoRollComponent::drawPianoKeys(juce::Graphics& g, juce::Rectangle<int> a
 
         if (isBlackKey)
         {
-            g.setColour(inScale ? juce::Colour(0xff262933) : juce::Colour(0xff17181c));
+            g.setColour(inScale ? juce::Colour(0xff152018) : juce::Colour(0xff090f0b));
             g.fillRect(static_cast<float>(area.getX()), y, static_cast<float>(area.getWidth() - 14), noteHeightPixels - 1.0f);
         }
         else
         {
-            g.setColour(inScale ? juce::Colour(0xff1e2129) : juce::Colour(0xff121317));
+            g.setColour(inScale ? juce::Colour(0xff1b2b20) : juce::Colour(0xff0e1711));
             g.fillRect(static_cast<float>(area.getX()), y, static_cast<float>(area.getWidth()), noteHeightPixels);
 
-            g.setColour(inScale ? juce::Colour(0xff333b4d) : juce::Colour(0xff20232b));
+            g.setColour(inScale ? juce::Colour(0xff233a2a) : juce::Colour(0xff131e17));
             g.drawHorizontalLine(static_cast<int>(y + noteHeightPixels - 1), static_cast<float>(area.getX()), static_cast<float>(area.getRight()));
 
             if (semitone == 0)
             {
                 int octave = (p / 12) - 1;
-                g.setColour(inScale ? juce::Colour(0xffe2e8f0) : juce::Colour(0xff64748b));
+                g.setColour(inScale ? juce::Colour(0xff34d399) : juce::Colour(0xff6b7280));
                 g.drawText("C" + juce::String(octave), area.getX() + 4, static_cast<int>(y), area.getWidth() - 8, static_cast<int>(noteHeightPixels), juce::Justification::centredLeft);
             }
         }
 
-        // Scale marker dot
+        // Scale marker dot (Phosphor Green indicator)
         if (currentScale != MusicalScale::Chromatic)
         {
-            g.setColour(inScale ? juce::Colour(0xff38bdf8) : juce::Colour(0xff334155));
+            g.setColour(inScale ? juce::Colour(0xff10b981) : juce::Colour(0xff1f2e24));
             g.fillEllipse(static_cast<float>(area.getRight() - 8), y + noteHeightPixels * 0.5f - 2.0f, inScale ? 4.0f : 2.0f, inScale ? 4.0f : 2.0f);
         }
     }
 
-    g.setColour(juce::Colour(0xff334155));
+    g.setColour(juce::Colour(0xff23422e));
     g.drawVerticalLine(area.getRight() - 1, static_cast<float>(area.getY()), static_cast<float>(area.getBottom()));
 }
 
@@ -479,18 +478,36 @@ void PianoRollComponent::drawNotes(juce::Graphics& g, juce::Rectangle<int> area)
         int effPitch = ev.message.getNoteNumber() + previewTranspose;
         bool inScale = isPitchInActiveScale(effPitch);
 
-        juce::Colour noteBase = inScale ? getVelocityColour(ev.message.getFloatVelocity()) : juce::Colour(0xff52525b);
+        // Rectangular Phosphor Traces (CRT lab equipment aesthetic)
+        juce::Colour noteBase;
+        if (!inScale)
+            noteBase = juce::Colour(0xff3a433e);
+        else if (isSelected)
+            noteBase = juce::Colour(0xfff59e0b); // Warm vintage amber
+        else
+            noteBase = juce::Colour(0xff10b981); // Vivid phosphor green
 
+        // Note body (flat rectangular trace)
         g.setColour(noteBase);
-        g.fillRoundedRectangle(rect.reduced(0.5f, 1.0f), 3.0f);
+        g.fillRoundedRectangle(rect.reduced(0.5f, 1.0f), 2.0f);
 
-        // Highlight top shine
+        // Phosphor highlight top shine
         g.setColour(noteBase.brighter(0.4f).withAlpha(0.6f));
-        g.fillRect(rect.getX() + 2.0f, rect.getY() + 1.0f, rect.getWidth() - 4.0f, 1.5f);
+        g.fillRect(rect.getX() + 1.0f, rect.getY() + 1.0f, rect.getWidth() - 2.0f, 1.2f);
 
-        // Border: Cyan if selected
-        g.setColour(isSelected ? juce::Colour(0xff38bdf8) : (inScale ? noteBase.darker(0.5f) : juce::Colour(0xff3f3f46)));
-        g.drawRoundedRectangle(rect.reduced(0.5f, 1.0f), 3.0f, isSelected ? 2.0f : 1.0f);
+        // Outer glow border
+        g.setColour(isSelected ? juce::Colour(0xfffbbf24) : (inScale ? juce::Colour(0xff34d399) : juce::Colour(0xff252c28)));
+        g.drawRoundedRectangle(rect.reduced(0.5f, 1.0f), 2.0f, isSelected ? 1.8f : 1.0f);
+
+        // Note Name text on note
+        if (rect.getWidth() >= 16.0f)
+        {
+            int noteNum = ev.message.getNoteNumber();
+            juce::String noteName = KeyDetector::getNoteName(noteNum % 12, false) + juce::String((noteNum / 12) - 1);
+            g.setFont(juce::Font(juce::jmin(10.0f, rect.getHeight() - 2.0f), juce::Font::bold));
+            g.setColour(isSelected ? juce::Colours::black : juce::Colours::white);
+            g.drawText(noteName, rect.reduced(2.0f, 0.0f).toNearestInt(), juce::Justification::centred, true);
+        }
     }
 }
 
@@ -501,18 +518,103 @@ void PianoRollComponent::drawPlayhead(juce::Graphics& g, juce::Rectangle<int> ar
     if (x < pianoKeysWidth || x > area.getRight())
         return;
 
-    g.setColour(juce::Colour(0x44ef4444));
-    g.fillRect(x - 2.0f, static_cast<float>(rulerHeight), 5.0f, static_cast<float>(getHeight() - rulerHeight));
+    // Laser phosphor green bloom halo
+    g.setColour(juce::Colour(0x3310b981));
+    g.fillRect(x - 3.0f, static_cast<float>(rulerHeight), 7.0f, static_cast<float>(getHeight() - rulerHeight));
 
-    g.setColour(juce::Colour(0xffef4444));
+    // Sharp phosphor laser beam
+    g.setColour(juce::Colour(0xff10b981));
     g.drawVerticalLine(static_cast<int>(x), static_cast<float>(rulerHeight), static_cast<float>(getHeight()));
 
+    // Indicator head
     juce::Path triangle;
     triangle.addTriangle(x - 6.0f, static_cast<float>(rulerHeight - 12),
                          x + 6.0f, static_cast<float>(rulerHeight - 12),
                          x, static_cast<float>(rulerHeight));
-    g.setColour(juce::Colour(0xffef4444));
     g.fillPath(triangle);
+}
+
+void PianoRollComponent::copySelectedNotes()
+{
+    noteClipboard.clear();
+    if (selectedNoteIds.empty())
+        return;
+
+    double minPpq = 1e9;
+    for (const auto& ev : editableEvents)
+    {
+        if (ev.message.isNoteOn() && selectedNoteIds.count(ev.noteId) > 0)
+            minPpq = std::min(minPpq, ev.ppqPosition);
+    }
+
+    for (const auto& ev : editableEvents)
+    {
+        if (ev.message.isNoteOn() && selectedNoteIds.count(ev.noteId) > 0)
+        {
+            ClipboardNote c;
+            c.pitch = ev.message.getNoteNumber();
+            c.offsetPpq = ev.ppqPosition - minPpq;
+            c.durationPpq = ev.ppqDuration;
+            c.velocity = ev.message.getFloatVelocity();
+            c.channel = ev.message.getChannel();
+            noteClipboard.push_back(c);
+        }
+    }
+}
+
+void PianoRollComponent::cutSelectedNotes()
+{
+    copySelectedNotes();
+    if (!selectedNoteIds.empty())
+    {
+        editableEvents.erase(
+            std::remove_if(editableEvents.begin(), editableEvents.end(),
+                           [this](const PlaybackEvent& ev) {
+                               return selectedNoteIds.count(ev.noteId) > 0;
+                           }),
+            editableEvents.end());
+
+        selectedNoteIds.clear();
+        notifySequenceChanged();
+        repaint();
+    }
+}
+
+void PianoRollComponent::pasteNotesAt(double targetPpq, int targetPitch)
+{
+    if (noteClipboard.empty())
+        return;
+
+    int maxId = 0;
+    for (const auto& ev : editableEvents)
+        maxId = std::max(maxId, ev.noteId);
+
+    selectedNoteIds.clear();
+    double basePpq = std::max(0.0, targetPpq);
+
+    for (const auto& clip : noteClipboard)
+    {
+        PlaybackEvent ev;
+        ev.noteId = ++maxId;
+        ev.ppqPosition = basePpq + clip.offsetPpq;
+        ev.ppqDuration = clip.durationPpq;
+
+        int pitch = clip.pitch;
+        if (targetPitch >= 0 && noteClipboard.size() == 1)
+            pitch = targetPitch;
+
+        if (scaleLockActive && currentScale != MusicalScale::Chromatic)
+            pitch = snapPitchToActiveScale(pitch);
+
+        pitch = juce::jlimit(0, 127, pitch);
+        ev.message = juce::MidiMessage::noteOn(clip.channel > 0 ? clip.channel : 1, pitch, clip.velocity);
+
+        editableEvents.push_back(ev);
+        selectedNoteIds.insert(ev.noteId);
+    }
+
+    notifySequenceChanged();
+    repaint();
 }
 
 void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
@@ -524,16 +626,23 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
     {
         juce::PopupMenu m;
         m.addItem(1, "Add Note");
+        m.addSeparator();
+
+        m.addItem(2, "Cut", !selectedNoteIds.empty());
+        m.addItem(3, "Copy", !selectedNoteIds.empty());
+        m.addItem(4, "Paste", !noteClipboard.empty());
+
         if (!selectedNoteIds.empty())
         {
-            m.addItem(2, "Delete Selected Note(s)");
-            m.addItem(3, "Duplicate Selected Note(s)");
-            m.addItem(4, "Octave Up (+12)");
-            m.addItem(5, "Octave Down (-12)");
+            m.addSeparator();
+            m.addItem(5, "Delete Selected Note(s)");
+            m.addItem(6, "Duplicate Selected Note(s)");
+            m.addItem(7, "Octave Up (+12)");
+            m.addItem(8, "Octave Down (-12)");
         }
         m.addSeparator();
-        m.addItem(6, "Select All Notes");
-        m.addItem(7, "Deselect All");
+        m.addItem(9, "Select All Notes");
+        m.addItem(10, "Deselect All");
 
         m.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(juce::Rectangle<int>(e.getScreenPosition().x, e.getScreenPosition().y, 1, 1)),
             [this, e](int result)
@@ -564,7 +673,19 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
                         onSequenceEdited(editableEvents);
                     repaint();
                 }
-                else if (result == 2) // Delete Selected
+                else if (result == 2) // Cut
+                {
+                    cutSelectedNotes();
+                }
+                else if (result == 3) // Copy
+                {
+                    copySelectedNotes();
+                }
+                else if (result == 4) // Paste
+                {
+                    pasteNotesAt(std::max(0.0, std::round(ppqAtX(e.x) * 4.0) / 4.0), pitchAtY(e.y));
+                }
+                else if (result == 5) // Delete Selected
                 {
                     editableEvents.erase(
                         std::remove_if(editableEvents.begin(), editableEvents.end(),
@@ -575,7 +696,7 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
                         onSequenceEdited(editableEvents);
                     repaint();
                 }
-                else if (result == 3) // Duplicate Selected
+                else if (result == 6) // Duplicate Selected
                 {
                     std::vector<PlaybackEvent> dups;
                     int maxId = 0;
@@ -602,7 +723,7 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
                         onSequenceEdited(editableEvents);
                     repaint();
                 }
-                else if (result == 4) // Octave Up
+                else if (result == 7) // Octave Up
                 {
                     for (auto& ev : editableEvents)
                     {
@@ -616,7 +737,7 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
                         onSequenceEdited(editableEvents);
                     repaint();
                 }
-                else if (result == 5) // Octave Down
+                else if (result == 8) // Octave Down
                 {
                     for (auto& ev : editableEvents)
                     {
@@ -630,17 +751,13 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
                         onSequenceEdited(editableEvents);
                     repaint();
                 }
-                else if (result == 6) // Select All
+                else if (result == 9) // Select All
                 {
-                    selectedNoteIds.clear();
-                    for (const auto& ev : editableEvents)
-                        selectedNoteIds.insert(ev.noteId);
-                    repaint();
+                    selectAllNotes();
                 }
-                else if (result == 7) // Deselect All
+                else if (result == 10) // Deselect All
                 {
-                    selectedNoteIds.clear();
-                    repaint();
+                    deselectAllNotes();
                 }
             });
         return;
@@ -667,34 +784,120 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
         return;
     }
 
+    // Check if clicked the Velocity Heatmap Bar at the bottom
+    if (e.y >= getHeight() - velocityBarHeight)
+    {
+        // "SELECT ALL" button on left
+        if (e.x <= 84)
+        {
+            selectAllNotes();
+            repaint();
+            return;
+        }
+
+        // Velocity Slider interaction
+        if (selectedNoteIds.empty())
+            selectAllNotes();
+
+        currentDragMode = DragMode::DragVelocitySlider;
+        dragStartPos = e.getPosition();
+        dragInitialAvgVelocity = getSelectedAverageVelocity();
+        dragInitialNoteVelocities.clear();
+
+        for (const auto& ev : editableEvents)
+        {
+            if (ev.message.isNoteOn() && selectedNoteIds.count(ev.noteId) > 0)
+                dragInitialNoteVelocities.push_back({ ev.noteId, ev.message.getFloatVelocity() });
+        }
+
+        float laneStart = 88.0f;
+        float laneWidth = static_cast<float>(std::max(50, getWidth() - 110 - 88));
+        float newVel = juce::jlimit(0.01f, 1.0f, (static_cast<float>(e.x) - laneStart) / laneWidth);
+        setSelectedVelocity(newVel);
+        repaint();
+        return;
+    }
+
     bool nearEdge = false;
     int hitNoteId = findNoteAt(e.getPosition(), nearEdge);
 
     if (hitNoteId >= 0)
     {
-        draggingNoteId = hitNoteId;
-
-        if (!e.mods.isShiftDown() && selectedNoteIds.count(hitNoteId) == 0)
+        if (e.mods.isAltDown())
         {
-            selectedNoteIds.clear();
-            selectedNoteIds.insert(hitNoteId);
-        }
-        else if (e.mods.isShiftDown())
-        {
-            selectedNoteIds.insert(hitNoteId);
-        }
-
-        for (const auto& ev : editableEvents)
-        {
-            if (ev.noteId == hitNoteId)
+            // Alt-drag note duplication: duplicate selected notes or hitNoteId immediately
+            if (selectedNoteIds.count(hitNoteId) == 0 && !e.mods.isShiftDown())
             {
-                dragInitialPpq = ev.ppqPosition;
-                dragInitialPitch = ev.message.getNoteNumber();
-                break;
+                selectedNoteIds.clear();
+                selectedNoteIds.insert(hitNoteId);
             }
-        }
 
-        currentDragMode = nearEdge ? DragMode::ResizeNoteEnd : DragMode::MoveNotes;
+            std::vector<PlaybackEvent> dups;
+            int maxId = 0;
+            for (const auto& ev : editableEvents)
+                maxId = std::max(maxId, ev.noteId);
+
+            std::set<int> newDupIds;
+            int newDraggingId = -1;
+
+            for (const auto& ev : editableEvents)
+            {
+                if (selectedNoteIds.count(ev.noteId) > 0)
+                {
+                    PlaybackEvent d = ev;
+                    d.noteId = ++maxId;
+                    if (ev.noteId == hitNoteId)
+                        newDraggingId = d.noteId;
+                    dups.push_back(d);
+                    newDupIds.insert(d.noteId);
+                }
+            }
+
+            selectedNoteIds = newDupIds;
+            for (const auto& d : dups)
+                editableEvents.push_back(d);
+
+            draggingNoteId = (newDraggingId >= 0) ? newDraggingId : (dups.empty() ? hitNoteId : dups[0].noteId);
+
+            for (const auto& ev : editableEvents)
+            {
+                if (ev.noteId == draggingNoteId)
+                {
+                    dragInitialPpq = ev.ppqPosition;
+                    dragInitialPitch = ev.message.getNoteNumber();
+                    break;
+                }
+            }
+
+            currentDragMode = DragMode::MoveNotes;
+            notifySequenceChanged();
+        }
+        else
+        {
+            draggingNoteId = hitNoteId;
+
+            if (!e.mods.isShiftDown() && selectedNoteIds.count(hitNoteId) == 0)
+            {
+                selectedNoteIds.clear();
+                selectedNoteIds.insert(hitNoteId);
+            }
+            else if (e.mods.isShiftDown())
+            {
+                selectedNoteIds.insert(hitNoteId);
+            }
+
+            for (const auto& ev : editableEvents)
+            {
+                if (ev.noteId == hitNoteId)
+                {
+                    dragInitialPpq = ev.ppqPosition;
+                    dragInitialPitch = ev.message.getNoteNumber();
+                    break;
+                }
+            }
+
+            currentDragMode = nearEdge ? DragMode::ResizeNoteEnd : DragMode::MoveNotes;
+        }
     }
     else
     {
@@ -770,6 +973,34 @@ void PianoRollComponent::mouseDrag(const juce::MouseEvent& e)
         }
         repaint();
     }
+    else if (currentDragMode == DragMode::DragVelocitySlider)
+    {
+        float laneStart = 88.0f;
+        float laneWidth = static_cast<float>(std::max(50, getWidth() - 110 - 88));
+        float currentXRatio = (static_cast<float>(e.x) - laneStart) / laneWidth;
+        float delta = currentXRatio - ((static_cast<float>(dragStartPos.x) - laneStart) / laneWidth);
+
+        if (selectedNoteIds.size() == 1)
+        {
+            setSelectedVelocity(currentXRatio);
+        }
+        else
+        {
+            // Proportionately scale all selected notes based on drag
+            for (const auto& initItem : dragInitialNoteVelocities)
+            {
+                float newV = juce::jlimit(0.01f, 1.0f, initItem.second + delta);
+                for (auto& ev : editableEvents)
+                {
+                    if (ev.noteId == initItem.first && ev.message.isNoteOn())
+                    {
+                        ev.message = juce::MidiMessage::noteOn(ev.message.getChannel(), ev.message.getNoteNumber(), newV);
+                    }
+                }
+            }
+            repaint();
+        }
+    }
     else if (currentDragMode == DragMode::MarqueeSelect)
     {
         marqueeRect = juce::Rectangle<int>(dragStartPos, e.getPosition());
@@ -785,7 +1016,7 @@ void PianoRollComponent::mouseDrag(const juce::MouseEvent& e)
 
 void PianoRollComponent::mouseUp(const juce::MouseEvent& /*e*/)
 {
-    if (currentDragMode == DragMode::MoveNotes || currentDragMode == DragMode::ResizeNoteEnd)
+    if (currentDragMode == DragMode::MoveNotes || currentDragMode == DragMode::ResizeNoteEnd || currentDragMode == DragMode::DragVelocitySlider)
     {
         notifySequenceChanged();
     }
@@ -796,22 +1027,196 @@ void PianoRollComponent::mouseUp(const juce::MouseEvent& /*e*/)
     repaint();
 }
 
+void PianoRollComponent::selectAllNotes()
+{
+    selectedNoteIds.clear();
+    for (const auto& ev : editableEvents)
+    {
+        if (ev.message.isNoteOn())
+            selectedNoteIds.insert(ev.noteId);
+    }
+    repaint();
+}
+
+void PianoRollComponent::deselectAllNotes()
+{
+    selectedNoteIds.clear();
+    repaint();
+}
+
+float PianoRollComponent::getSelectedAverageVelocity() const
+{
+    if (selectedNoteIds.empty())
+        return 0.75f;
+
+    float sum = 0.0f;
+    int count = 0;
+    for (const auto& ev : editableEvents)
+    {
+        if (ev.message.isNoteOn() && selectedNoteIds.count(ev.noteId) > 0)
+        {
+            sum += ev.message.getFloatVelocity();
+            count++;
+        }
+    }
+    return count > 0 ? (sum / static_cast<float>(count)) : 0.75f;
+}
+
+void PianoRollComponent::setSelectedVelocity(float newVel)
+{
+    float clamped = juce::jlimit(0.01f, 1.0f, newVel);
+
+    if (selectedNoteIds.size() <= 1)
+    {
+        for (auto& ev : editableEvents)
+        {
+            if (ev.message.isNoteOn() && selectedNoteIds.count(ev.noteId) > 0)
+            {
+                ev.message = juce::MidiMessage::noteOn(ev.message.getChannel(), ev.message.getNoteNumber(), clamped);
+            }
+        }
+    }
+    else
+    {
+        // Proportionately scaling
+        float currentAvg = getSelectedAverageVelocity();
+        float delta = clamped - currentAvg;
+        for (auto& ev : editableEvents)
+        {
+            if (ev.message.isNoteOn() && selectedNoteIds.count(ev.noteId) > 0)
+            {
+                float v = juce::jlimit(0.01f, 1.0f, ev.message.getFloatVelocity() + delta);
+                ev.message = juce::MidiMessage::noteOn(ev.message.getChannel(), ev.message.getNoteNumber(), v);
+            }
+        }
+    }
+    repaint();
+}
+
+std::vector<int> PianoRollComponent::getCurrentlyAuditioningPitches() const
+{
+    std::vector<int> pitches;
+    if (!selectedNoteIds.empty())
+    {
+        for (const auto& ev : editableEvents)
+        {
+            if (ev.message.isNoteOn() && selectedNoteIds.count(ev.noteId) > 0)
+                pitches.push_back(ev.message.getNoteNumber() + previewTranspose);
+        }
+    }
+    else
+    {
+        for (const auto& ev : editableEvents)
+        {
+            if (ev.message.isNoteOn() && playheadPpq >= ev.ppqPosition && playheadPpq < ev.ppqPosition + ev.ppqDuration)
+                pitches.push_back(ev.message.getNoteNumber() + previewTranspose);
+        }
+    }
+    return pitches;
+}
+
+void PianoRollComponent::drawVelocityHeatmap(juce::Graphics& g, juce::Rectangle<int> area)
+{
+    g.setColour(juce::Colour(0xff0b0d12));
+    g.fillRect(area);
+    g.setColour(juce::Colour(0xff222736));
+    g.drawHorizontalLine(area.getY(), static_cast<float>(area.getX()), static_cast<float>(area.getRight()));
+
+    auto r = area.reduced(4, 2);
+
+    // "SELECT ALL" button on left
+    auto selectAllRect = r.removeFromLeft(76).reduced(1, 2);
+    g.setColour(juce::Colour(0xff1e2433));
+    g.fillRoundedRectangle(selectAllRect.toFloat(), 4.0f);
+    g.setColour(juce::Colour(0xff38bdf8));
+    g.drawRoundedRectangle(selectAllRect.toFloat(), 4.0f, 1.0f);
+    g.setFont(juce::Font(9.0f, juce::Font::bold));
+    g.setColour(juce::Colour(0xffe0f2fe));
+    g.drawText("SELECT ALL", selectAllRect, juce::Justification::centred);
+
+    r.removeFromLeft(8);
+
+    // Slider Lane bounds
+    int laneRight = r.getRight() - 110;
+    juce::Rectangle<float> laneRect(static_cast<float>(r.getX()), static_cast<float>(r.getY() + 4),
+                                    static_cast<float>(std::max(50, laneRight - r.getX())), static_cast<float>(r.getHeight() - 8));
+
+    // Gradient Heatmap bar
+    juce::ColourGradient grad(juce::Colour(0xff34d399), laneRect.getX(), laneRect.getY(),
+                              juce::Colour(0xfff43f5e), laneRect.getRight(), laneRect.getY(), false);
+    grad.addColour(0.5, juce::Colour(0xfffbbf24));
+    g.setGradientFill(grad);
+    g.fillRoundedRectangle(laneRect, 3.0f);
+
+    g.setColour(juce::Colour(0x55000000));
+    g.drawRoundedRectangle(laneRect, 3.0f, 1.0f);
+
+    // Slider handle and readout
+    float avgVel = getSelectedAverageVelocity();
+    bool hasSelection = !selectedNoteIds.empty();
+
+    if (hasSelection)
+    {
+        float handleX = laneRect.getX() + (avgVel * laneRect.getWidth());
+        // Handle line & circle
+        g.setColour(juce::Colour(0xffffffff));
+        g.drawLine(handleX, static_cast<float>(area.getY()), handleX, static_cast<float>(area.getBottom()), 2.5f);
+        g.setColour(juce::Colour(0xfffbbf24));
+        g.fillEllipse(handleX - 5.0f, laneRect.getCentreY() - 5.0f, 10.0f, 10.0f);
+        g.setColour(juce::Colour(0xff18181b));
+        g.drawEllipse(handleX - 5.0f, laneRect.getCentreY() - 5.0f, 10.0f, 10.0f, 1.5f);
+    }
+
+    // Readout label on right
+    auto readoutRect = r.removeFromRight(100);
+    g.setFont(juce::Font(10.0f, juce::Font::bold));
+    if (hasSelection)
+    {
+        int velInt = static_cast<int>(std::round(avgVel * 127.0f));
+        g.setColour(juce::Colour(0xfffcd34d));
+        juce::String txt = (selectedNoteIds.size() == 1)
+            ? "VEL: " + juce::String(velInt)
+            : "AVG: " + juce::String(velInt) + " (" + juce::String(selectedNoteIds.size()) + ")";
+        g.drawText(txt, readoutRect, juce::Justification::centredRight);
+    }
+    else
+    {
+        g.setColour(juce::Colour(0xff64748b));
+        g.drawText("Velocity Fader", readoutRect, juce::Justification::centredRight);
+    }
+}
+
 bool PianoRollComponent::keyPressed(const juce::KeyPress& key)
 {
     if (key.isKeyCode(juce::KeyPress::deleteKey) || key.isKeyCode(juce::KeyPress::backspaceKey))
     {
         if (!selectedNoteIds.empty())
         {
-            editableEvents.erase(
-                std::remove_if(editableEvents.begin(), editableEvents.end(),
-                               [this](const PlaybackEvent& ev) {
-                                   return selectedNoteIds.count(ev.noteId) > 0;
-                               }),
-                editableEvents.end());
-
-            selectedNoteIds.clear();
-            notifySequenceChanged();
-            repaint();
+            cutSelectedNotes();
+            return true;
+        }
+    }
+    else if (key.getModifiers().isCommandDown() || key.getModifiers().isCtrlDown())
+    {
+        int code = key.getKeyCode();
+        if (code == 'C' || code == 'c')
+        {
+            copySelectedNotes();
+            return true;
+        }
+        else if (code == 'X' || code == 'x')
+        {
+            cutSelectedNotes();
+            return true;
+        }
+        else if (code == 'V' || code == 'v')
+        {
+            pasteNotesAt(playheadPpq);
+            return true;
+        }
+        else if (code == 'A' || code == 'a')
+        {
+            selectAllNotes();
             return true;
         }
     }
@@ -825,3 +1230,4 @@ void PianoRollComponent::notifySequenceChanged()
 }
 
 } // namespace MidiPreviewer
+

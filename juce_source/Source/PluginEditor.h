@@ -5,11 +5,13 @@
 #include "PluginProcessor.h"
 #include "PianoRollComponent.h"
 #include "MidiFileExporter.h"
+#include "MidiLensLookAndFeel.h"
 
 namespace MidiPreviewer
 {
 
-class ExportHandleComponent : public juce::Component
+class ExportHandleComponent : public juce::Component,
+                              public juce::SettableTooltipClient
 {
 public:
     ExportHandleComponent();
@@ -41,6 +43,7 @@ public:
     void filesDropped(const juce::StringArray& files, int x, int y) override;
 
 private:
+    MidiLensLookAndFeel lookAndFeel;
     MidiPreviewerAudioProcessor& audioProcessor;
 
     PianoRollComponent pianoRoll;
@@ -132,11 +135,37 @@ private:
     bool isDraggingExternalFile { false };
     float currentZoomX { 1.0f };
 
+    // Top Bar (Line 1)
+    juce::ToggleButton activeToggle { "ACTIVE" };
+    juce::TextButton randomDiceButton { "DICE" };
+    juce::Label presetLabel;
+    juce::ComboBox presetSelector;
+
+    // Library & Files (Line 2)
+    juce::ComboBox libraryFileSelector;
+    juce::Array<juce::File> libraryFiles;
+
+    // Interactive Chord Visualizer & Analysis Banner
+    juce::Label chordBadge;
+    juce::Label chordFormulaLabel;
+    juce::Label chordNotesLabel;
+
+    // Arpeggiator Controls Strip
+    juce::ToggleButton arpToggle { "ARP" };
+    juce::ComboBox arpModeSelector;
+    juce::ComboBox arpRateSelector;
+    juce::Slider arpOctavesSlider;
+    juce::Label arpOctavesLabel;
+
     void setupCustomStyling();
     void updateKeyBadge();
+    void updateChordVisualizer();
     void applyDawKeyMatch();
     void loadEmbeddedDemoGroove();
+    void loadPresetByIndex(int index);
+    void pickRandomFile();
     void updatePianoRollScale();
+    void applyArpeggiator();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MidiPreviewerAudioProcessorEditor)
 };

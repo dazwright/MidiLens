@@ -1,9 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { detectChordFromPitches, ChordAnalysisResult } from '../chordDetector';
-import { getNoteName } from '../keyDetection';
 import { synthAudioEngine } from '../audioEngine';
 import { MidiNote, ScaleType } from '../types';
-import { Activity, Music, Sparkles, Volume2, Info } from 'lucide-react';
+import { Activity, Music, Sparkles, Volume2 } from 'lucide-react';
 
 interface ChordVisualizerProps {
   activePitches: number[];
@@ -21,38 +20,33 @@ export const ChordVisualizer: React.FC<ChordVisualizerProps> = ({
   sequenceNotes,
   playheadPpq,
   selectedNoteIds,
-  scaleRoot,
-  scaleType,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [visualMode, setVisualMode] = useState<'realtime' | 'playhead' | 'selected'>('realtime');
 
   // Determine current pitches to analyze based on mode or active voices
   let targetPitches: number[] = [];
-  let sourceLabel = 'Real-time Audio Output';
+  let sourceLabel = 'REAL-TIME AUDIO';
 
   if (activePitches.length > 0) {
     targetPitches = activePitches;
-    sourceLabel = 'Real-time Playing Voices';
+    sourceLabel = 'LIVE CATHODE VOICES';
   } else if (selectedNoteIds.size > 0 && visualMode === 'selected') {
     targetPitches = sequenceNotes.filter((n) => selectedNoteIds.has(n.id)).map((n) => n.pitch);
-    sourceLabel = `Selected Notes (${selectedNoteIds.size})`;
+    sourceLabel = `BUFFER SELECTION (${selectedNoteIds.size})`;
   } else {
-    // Playhead note slice
     const playheadNotes = sequenceNotes.filter(
       (n) => playheadPpq >= n.startPpq && playheadPpq < n.startPpq + n.durationPpq
     );
     targetPitches = playheadNotes.map((n) => n.pitch);
-    sourceLabel = `Playhead Position (${playheadPpq.toFixed(2)} PPQ)`;
+    sourceLabel = `SWEEP SLICE (${playheadPpq.toFixed(2)} PPQ)`;
   }
 
   // Detect Chord
   const chordResult: ChordAnalysisResult = detectChordFromPitches(targetPitches);
-
-  // Active pitch class set
   const activePitchClasses = new Set(targetPitches.map((p) => ((p % 12) + 12) % 12));
 
-  // Audio Oscilloscope & Spectrum Canvas Animation Loop
+  // Analog Cathode Oscilloscope Canvas Animation Loop
   useEffect(() => {
     let animId: number;
     const canvas = canvasRef.current;
@@ -65,14 +59,18 @@ export const ChordVisualizer: React.FC<ChordVisualizerProps> = ({
       const width = canvas.width;
       const height = canvas.height;
 
-      ctx.clearRect(0, 0, width, height);
+      // Dark obsidian phosphor screen clear
+      ctx.fillStyle = '#070d09';
+      ctx.fillRect(0, 0, width, height);
 
-      // Background grid line
-      ctx.strokeStyle = 'rgba(51, 65, 85, 0.3)';
+      // CRT phosphor reticle grid
+      ctx.strokeStyle = 'rgba(16, 185, 129, 0.12)';
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(0, height / 2);
       ctx.lineTo(width, height / 2);
+      ctx.moveTo(width / 2, 0);
+      ctx.lineTo(width / 2, height);
       ctx.stroke();
 
       if (analyser && targetPitches.length > 0) {
@@ -83,24 +81,25 @@ export const ChordVisualizer: React.FC<ChordVisualizerProps> = ({
         analyser.getByteTimeDomainData(timeData);
         analyser.getByteFrequencyData(freqData);
 
-        // 1. Render Spectrum Bars
+        // 1. Phosphor Frequency Spectrum Trace
         const barWidth = width / (bufferLength / 2);
         for (let i = 0; i < bufferLength / 2; i++) {
-          const barHeight = (freqData[i] / 255) * (height - 10);
+          const barHeight = (freqData[i] / 255) * (height - 8);
           const x = i * barWidth;
           const gradient = ctx.createLinearGradient(0, height, 0, height - barHeight);
-          gradient.addColorStop(0, 'rgba(14, 165, 233, 0.15)');
-          gradient.addColorStop(1, 'rgba(245, 158, 11, 0.6)');
+          gradient.addColorStop(0, 'rgba(16, 185, 129, 0.1)');
+          gradient.addColorStop(1, 'rgba(16, 185, 129, 0.55)');
 
           ctx.fillStyle = gradient;
-          ctx.fillRect(x, height - barHeight, barWidth - 1, barHeight);
+          ctx.fillRect(x, height - barHeight, barWidth - 0.5, barHeight);
         }
 
-        // 2. Render Waveform Oscilloscope Line
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = '#38bdf8';
-        ctx.shadowColor = '#38bdf8';
-        ctx.shadowBlur = 8;
+        // 2. Oscilloscope Cathode Ray Waveform (Phosphor Green Glow)
+        ctx.save();
+        ctx.lineWidth = 2.0;
+        ctx.strokeStyle = '#10b981';
+        ctx.shadowColor = '#34d399';
+        ctx.shadowBlur = 10;
         ctx.beginPath();
 
         const sliceWidth = width / bufferLength;
@@ -120,19 +119,23 @@ export const ChordVisualizer: React.FC<ChordVisualizerProps> = ({
 
         ctx.lineTo(width, height / 2);
         ctx.stroke();
-        ctx.shadowBlur = 0;
+        ctx.restore();
       } else {
-        // Idle ambient subtle wave line
+        // Idle ambient subtle harmonic trace line
         const now = performance.now() * 0.002;
-        ctx.lineWidth = 1.5;
-        ctx.strokeStyle = 'rgba(148, 163, 184, 0.4)';
+        ctx.save();
+        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = 'rgba(16, 185, 129, 0.35)';
+        ctx.shadowColor = '#10b981';
+        ctx.shadowBlur = 4;
         ctx.beginPath();
-        for (let x = 0; x < width; x += 4) {
-          const y = height / 2 + Math.sin(x * 0.05 + now) * 3;
+        for (let x = 0; x < width; x += 3) {
+          const y = height / 2 + Math.sin(x * 0.06 + now) * 2.5;
           if (x === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         }
         ctx.stroke();
+        ctx.restore();
       }
 
       animId = requestAnimationFrame(render);
@@ -146,51 +149,51 @@ export const ChordVisualizer: React.FC<ChordVisualizerProps> = ({
   }, [targetPitches]);
 
   return (
-    <div className="w-full bg-[#151824] border border-slate-800 rounded-2xl p-4 shadow-xl text-slate-200 font-mono space-y-4 animate-in fade-in duration-200">
-      {/* Top Header & Visualizer Source Tabs */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+    <div className="w-full bg-[#181a1e] border-2 border-black/90 rounded-md p-3.5 shadow-2xl text-neutral-200 font-mono space-y-3 chassis-bevel">
+      {/* Top Header & Visualizer Mode Stepped Selector */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b-2 border-black/80 pb-2.5 shadow-[0_1px_0_rgba(255,255,255,0.06)]">
         <div className="flex items-center gap-2">
-          <div className="p-1.5 rounded-lg bg-sky-500/15 border border-sky-500/30 text-sky-400">
+          <div className="p-1.5 rounded bg-black/60 border border-neutral-700/80 text-emerald-400 shadow-inner">
             <Activity className="w-4 h-4 animate-pulse" />
           </div>
           <div>
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-100 flex items-center gap-2">
-              Real-time Harmonic Output & Chord Visualizer
+            <h3 className="silkscreen-label text-neutral-300 flex items-center gap-2">
+              TELEMETRY & HARMONIC CRT DECK
             </h3>
-            <span className="text-[10px] text-slate-400">
-              Source: <strong className="text-amber-400">{sourceLabel}</strong>
+            <span className="text-[10px] text-neutral-500 font-mono">
+              CHANNEL: <strong className="text-amber-400">{sourceLabel}</strong>
             </span>
           </div>
         </div>
 
-        {/* Source Selector Pills */}
-        <div className="flex items-center gap-1 bg-[#1c202e] p-1 rounded-xl border border-slate-700/60">
+        {/* Segmented Rocker Mode Switch */}
+        <div className="flex items-center bg-[#101214] p-0.5 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
           <button
             onClick={() => setVisualMode('realtime')}
-            className={`px-2.5 py-1 text-[10px] font-bold rounded-lg transition ${
+            className={`px-3 py-1 text-[9px] font-bold uppercase tracking-wider rounded transition ${
               visualMode === 'realtime'
-                ? 'bg-sky-500 text-slate-950 shadow'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                ? 'bg-[#d97706] text-black font-extrabold shadow-[0_0_8px_rgba(217,119,6,0.5)]'
+                : 'text-neutral-400 hover:text-white'
             }`}
           >
             Live Output
           </button>
           <button
             onClick={() => setVisualMode('playhead')}
-            className={`px-2.5 py-1 text-[10px] font-bold rounded-lg transition ${
+            className={`px-3 py-1 text-[9px] font-bold uppercase tracking-wider rounded transition ${
               visualMode === 'playhead'
-                ? 'bg-sky-500 text-slate-950 shadow'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                ? 'bg-[#d97706] text-black font-extrabold shadow-[0_0_8px_rgba(217,119,6,0.5)]'
+                : 'text-neutral-400 hover:text-white'
             }`}
           >
-            Playhead Slice
+            Playhead
           </button>
           <button
             onClick={() => setVisualMode('selected')}
-            className={`px-2.5 py-1 text-[10px] font-bold rounded-lg transition ${
+            className={`px-3 py-1 text-[9px] font-bold uppercase tracking-wider rounded transition ${
               visualMode === 'selected'
-                ? 'bg-sky-500 text-slate-950 shadow'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                ? 'bg-[#d97706] text-black font-extrabold shadow-[0_0_8px_rgba(217,119,6,0.5)]'
+                : 'text-neutral-400 hover:text-white'
             }`}
           >
             Selection ({selectedNoteIds.size})
@@ -198,41 +201,41 @@ export const ChordVisualizer: React.FC<ChordVisualizerProps> = ({
         </div>
       </div>
 
-      {/* Main Chord Badge + Interactive 12-Tone Pitch Wheel + Audio Spectrum Canvas */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-center">
-        {/* Box 1: Big Detected Chord Name Display */}
-        <div className="flex flex-col items-start justify-center p-4 bg-[#1b1e2c] border border-slate-700/70 rounded-xl space-y-2 shadow-inner min-h-[110px]">
-          <span className="text-[9px] uppercase tracking-widest text-slate-400 font-semibold flex items-center gap-1">
-            <Music className="w-3 h-3 text-amber-400" />
-            Detected Chord:
+      {/* Main CRT Screens Deck: 3 Recessed Phosphor Wells */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
+        {/* Screen 1: Bold Warm Amber 7-Segment CRT Readout */}
+        <div className="flex flex-col items-start justify-center p-3.5 bg-[#070d09] crt-screen border-2 border-black/90 rounded space-y-1.5 shadow-[inset_0_0_25px_rgba(0,0,0,0.95)] min-h-[110px]">
+          <span className="silkscreen-label text-emerald-500/80 flex items-center gap-1.5">
+            <Music className="w-3 h-3 text-amber-500" />
+            DETECTED CHORD // CRT TUBE
           </span>
           <div className="flex items-baseline gap-2">
-            <h2 className="text-3xl font-extrabold text-amber-400 tracking-tight font-mono drop-shadow">
+            <h2 className="text-3xl font-extrabold text-[#fbbf24] tracking-tight font-mono drop-shadow-[0_0_12px_rgba(245,158,11,0.65)]">
               {chordResult.fullName}
             </h2>
             {chordResult.isSlashChord && (
-              <span className="text-xs text-sky-400 font-bold bg-sky-500/10 border border-sky-500/30 rounded px-1.5 py-0.5">
-                Slash / Bass {chordResult.bassNote}
+              <span className="text-[10px] font-bold text-amber-300 bg-amber-950/60 border border-amber-600/40 rounded px-1.5 py-0.5">
+                BASS {chordResult.bassNote}
               </span>
             )}
           </div>
-          <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
-            <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-semibold border border-slate-700">
+          <div className="flex flex-wrap items-center gap-1.5 text-[9px]">
+            <span className="px-2 py-0.5 rounded bg-[#0e1710] text-emerald-400 font-bold border border-emerald-900/60">
               {chordResult.quality}
             </span>
             {chordResult.intervals.length > 0 && (
-              <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 font-bold border border-amber-500/30">
+              <span className="px-2 py-0.5 rounded bg-amber-950/50 text-amber-300 font-bold border border-amber-800/40">
                 {chordResult.intervals.join(' - ')}
               </span>
             )}
           </div>
         </div>
 
-        {/* Box 2: 12-Tone Interactive Pitch Class Ring */}
-        <div className="flex flex-col items-center justify-center p-3 bg-[#1b1e2c] border border-slate-700/70 rounded-xl space-y-2 min-h-[110px]">
-          <span className="text-[9px] uppercase tracking-widest text-slate-400 font-semibold flex items-center gap-1">
-            <Sparkles className="w-3 h-3 text-sky-400" />
-            12-Tone Harmonic Circle
+        {/* Screen 2: 12-Tone Frequency Matrix Array */}
+        <div className="flex flex-col items-center justify-center p-3 bg-[#070d09] crt-screen border-2 border-black/90 rounded space-y-2 shadow-[inset_0_0_25px_rgba(0,0,0,0.95)] min-h-[110px]">
+          <span className="silkscreen-label text-emerald-500/80 flex items-center gap-1.5">
+            <Sparkles className="w-3 h-3 text-emerald-400" />
+            12-TONE FREQUENCY MATRIX
           </span>
           <div className="grid grid-cols-6 gap-1 w-full max-w-[220px]">
             {PITCH_CLASSES.map((noteName, pc) => {
@@ -245,11 +248,11 @@ export const ChordVisualizer: React.FC<ChordVisualizerProps> = ({
                   className={`py-1 rounded text-[10px] font-mono font-bold transition flex flex-col items-center justify-center border ${
                     isActive
                       ? isRoot
-                        ? 'bg-amber-500 text-slate-950 border-amber-300 shadow-md shadow-amber-500/30 scale-105'
-                        : 'bg-sky-500 text-slate-950 border-sky-300 shadow-md shadow-sky-500/30 scale-105'
-                      : 'bg-slate-800/80 text-slate-400 border-slate-700 hover:bg-slate-700 hover:text-slate-200'
+                        ? 'bg-[#d97706] text-black border-amber-400 shadow-[0_0_10px_rgba(217,119,6,0.8)] scale-105'
+                        : 'bg-[#10b981] text-black border-emerald-300 shadow-[0_0_8px_rgba(16,185,129,0.8)] scale-105'
+                      : 'bg-[#0b120d] text-emerald-800 border-emerald-950/80 hover:bg-[#121c15] hover:text-emerald-400'
                   }`}
-                  title={`Click to audition ${noteName}`}
+                  title={`Trigger tone generator: ${noteName}`}
                 >
                   <span>{noteName}</span>
                 </button>
@@ -258,37 +261,37 @@ export const ChordVisualizer: React.FC<ChordVisualizerProps> = ({
           </div>
         </div>
 
-        {/* Box 3: Real-time Audio Spectrum & Oscilloscope Canvas */}
-        <div className="flex flex-col items-start justify-center p-3 bg-[#1b1e2c] border border-slate-700/70 rounded-xl space-y-1.5 min-h-[110px]">
-          <span className="text-[9px] uppercase tracking-widest text-slate-400 font-semibold flex items-center gap-1">
+        {/* Screen 3: Phosphor Oscilloscope Cathode Ray Tube */}
+        <div className="flex flex-col items-start justify-center p-3 bg-[#070d09] crt-screen border-2 border-black/90 rounded space-y-1.5 shadow-[inset_0_0_25px_rgba(0,0,0,0.95)] min-h-[110px]">
+          <span className="silkscreen-label text-emerald-500/80 flex items-center gap-1.5">
             <Volume2 className="w-3 h-3 text-emerald-400" />
-            Audio Output Waveform & Spectrum
+            ANALOG HARMONIC SCOPE
           </span>
-          <div className="relative w-full h-16 bg-[#0f111a] rounded-lg border border-slate-800 overflow-hidden">
+          <div className="relative w-full h-16 bg-[#040705] rounded border border-emerald-950/60 overflow-hidden shadow-inner">
             <canvas ref={canvasRef} width={280} height={64} className="w-full h-full block" />
           </div>
         </div>
       </div>
 
-      {/* Bottom Notes & Pitches Breakdown Bar */}
+      {/* Bottom Notes & Pitches Telemetry Strip */}
       {chordResult.pitchNames.length > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2 bg-[#1b1e2c] border border-slate-800 rounded-xl text-[11px]">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-slate-400 font-semibold text-[10px] uppercase">Active Pitches:</span>
+        <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-1.5 bg-[#101215] border border-neutral-700/80 rounded text-[10px] shadow-inner">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="silkscreen-label text-neutral-400">ACTIVE PITCHES:</span>
             {chordResult.pitchNames.map((name, idx) => (
               <span
                 key={idx}
-                className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 font-mono text-amber-300 font-bold"
+                className="px-1.5 py-0.5 rounded bg-black/80 border border-emerald-900/80 font-mono text-emerald-400 font-bold"
               >
                 {name}
               </span>
             ))}
           </div>
 
-          <div className="flex items-center gap-3 text-slate-400 text-[10px]">
-            <span>Root: <strong className="text-amber-400">{chordResult.rootNote}</strong></span>
-            <span>Bass: <strong className="text-sky-400">{chordResult.bassNote}</strong></span>
-            <span>Count: <strong className="text-slate-200">{targetPitches.length} Notes</strong></span>
+          <div className="flex items-center gap-3 text-neutral-400 text-[10px]">
+            <span>ROOT: <strong className="text-amber-400">{chordResult.rootNote}</strong></span>
+            <span>BASS: <strong className="text-emerald-400">{chordResult.bassNote}</strong></span>
+            <span>VOICES: <strong className="text-neutral-200">{targetPitches.length}</strong></span>
           </div>
         </div>
       )}

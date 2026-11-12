@@ -107,8 +107,8 @@ export const PluginSimulator: React.FC = () => {
   const [activePitches, setActivePitches] = useState<number[]>([]);
 
   // Panel & Modal visibility toggles
-  const [showChordVisualizer, setShowChordVisualizer] = useState(true);
-  const [showArpPanel, setShowArpPanel] = useState(true);
+  const [showChordVisualizer, setShowChordVisualizer] = useState(false);
+  const [showArpPanel, setShowArpPanel] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
 
   const [keyResult, setKeyResult] = useState<KeyResult>(() => analyzeKeyFromNotes(PRESET_SEQUENCES[0].notes));
@@ -140,54 +140,65 @@ export const PluginSimulator: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
-  // Push snapshot before performing destructive sequence changes (maintains up to 50 historical steps, guaranteed >= 12 steps back)
+  // Keep ref to sequence so pushHistorySnapshot can capture the exact pre-mutation state synchronously
+  const sequenceRef = useRef<MidiSequence>(sequence);
+  useEffect(() => {
+    sequenceRef.current = sequence;
+  }, [sequence]);
+
+  // Push snapshot before performing destructive sequence changes (maintains up to 50 historical steps)
   const pushHistorySnapshot = useCallback(
     (description: string) => {
+      const snap = JSON.parse(JSON.stringify(sequenceRef.current));
       setPastHistory((prev) => [
-        ...prev.slice(-49), // Retains up to 50 undo states (well exceeding the 12-step requirement)
+        ...prev.slice(-49), // Retains up to 50 undo states
         {
-          sequence: JSON.parse(JSON.stringify(sequence)),
+          sequence: snap,
           description,
         },
       ]);
       setFutureHistory([]); // Clear redo
     },
-    [sequence]
+    []
   );
 
   const handleUndo = useCallback(() => {
-    if (pastHistory.length === 0) return;
-    const previous = pastHistory[pastHistory.length - 1];
-    const newPast = pastHistory.slice(0, pastHistory.length - 1);
+    setPastHistory((prevPast) => {
+      if (prevPast.length === 0) return prevPast;
+      const previous = prevPast[prevPast.length - 1];
+      const newPast = prevPast.slice(0, prevPast.length - 1);
 
-    setFutureHistory((prev) => [
-      {
-        sequence: JSON.parse(JSON.stringify(sequence)),
-        description: 'Undo',
-      },
-      ...prev,
-    ]);
+      setFutureHistory((prevFuture) => [
+        {
+          sequence: JSON.parse(JSON.stringify(sequenceRef.current)),
+          description: 'Undo',
+        },
+        ...prevFuture,
+      ]);
 
-    setPastHistory(newPast);
-    setSequence(previous.sequence);
-  }, [pastHistory, sequence]);
+      setSequence(previous.sequence);
+      return newPast;
+    });
+  }, []);
 
   const handleRedo = useCallback(() => {
-    if (futureHistory.length === 0) return;
-    const next = futureHistory[0];
-    const newFuture = futureHistory.slice(1);
+    setFutureHistory((prevFuture) => {
+      if (prevFuture.length === 0) return prevFuture;
+      const next = prevFuture[0];
+      const newFuture = prevFuture.slice(1);
 
-    setPastHistory((prev) => [
-      ...prev,
-      {
-        sequence: JSON.parse(JSON.stringify(sequence)),
-        description: 'Redo',
-      },
-    ]);
+      setPastHistory((prevPast) => [
+        ...prevPast,
+        {
+          sequence: JSON.parse(JSON.stringify(sequenceRef.current)),
+          description: 'Redo',
+        },
+      ]);
 
-    setFutureHistory(newFuture);
-    setSequence(next.sequence);
-  }, [futureHistory, sequence]);
+      setSequence(next.sequence);
+      return newFuture;
+    });
+  }, []);
 
   // Global Keyboard Shortcuts (Cmd+Z / Ctrl+Z for Undo, Cmd+Shift+Z / Ctrl+Y for Redo)
   useEffect(() => {
@@ -345,6 +356,59 @@ export const PluginSimulator: React.FC = () => {
       synthAudioEngine.setTempo(clamped);
     }
   }, []);
+
+  const stepTempo = useCallback((delta: number) => {
+    setSequence((prev) => {
+      const nextBpm = Math.round(Math.min(320, Math.max(20, prev.bpm + delta)));
+      setTempoInputValue(String(nextBpm));
+      synthAudioEngine.setTempo(nextBpm);
+      return { ...prev, bpm: nextBpm };
+    });
+  }, []);
+
+  const [isTempoDragging, setIsTempoDragging] = useState(false);
+  const tempoInputRef = useRef<HTMLInputElement>(null);
+
+  const handleTempoMouseDown = (e: React.MouseEvent<HTMLInputElement>) => {
+    // Only drag on primary left click
+    if (e.button !== 0) return;
+
+    const startY = e.clientY;
+    const startBpm = sequence.bpm;
+    let didMove = false;
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const deltaY = startY - moveEvent.clientY; // Upward is positive
+      if (!didMove && Math.abs(deltaY) > 2) {
+        didMove = true;
+        setIsTempoDragging(true);
+        document.body.style.cursor = 'ns-resize';
+      }
+
+      if (didMove) {
+        // Normal sensitivity: 1px = ~0.65 BPM; Shift held = fine 0.15 BPM
+        const rate = moveEvent.shiftKey ? 0.15 : 0.65;
+        const targetBpm = Math.round(Math.min(320, Math.max(20, startBpm + deltaY * rate)));
+        handleTempoChange(targetBpm);
+      }
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      setIsTempoDragging(false);
+
+      if (!didMove) {
+        // It was a simple click without drag: focus and select all text so user can type
+        tempoInputRef.current?.focus();
+        tempoInputRef.current?.select();
+      }
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  };
 
   const handleTapTempo = useCallback(() => {
     setIsTapActive(true);
@@ -1034,9 +1098,13 @@ export const PluginSimulator: React.FC = () => {
     URL.revokeObjectURL(url);
   }, [sequence, params]);
 
-  const currentBar = Math.floor(playheadPpq / 4) + 1;
-  const currentBeat = Math.floor(playheadPpq % 4) + 1;
-  const currentTick = Math.floor((playheadPpq % 1) * 100);
+  const timeSigNum = sequence.timeSigNumerator || 4;
+  const timeSigDen = sequence.timeSigDenominator || 4;
+  const barPpq = timeSigNum * (4 / timeSigDen);
+  const beatPpq = 4 / timeSigDen;
+  const currentBar = Math.floor(playheadPpq / barPpq) + 1;
+  const currentBeat = Math.floor((playheadPpq % barPpq) / beatPpq) + 1;
+  const currentTick = Math.floor(((playheadPpq % beatPpq) / beatPpq) * 100);
 
   const filteredScannedFiles = scannedFiles.filter(
     (f) =>
@@ -1046,78 +1114,99 @@ export const PluginSimulator: React.FC = () => {
 
   return (
     <div
-      className="relative flex flex-col w-full h-full bg-[#141722] text-slate-100 border border-slate-800/80 rounded-2xl overflow-hidden shadow-2xl font-sans"
+      className="relative flex flex-col w-full h-full bg-gradient-to-b from-[#1c1e22] via-[#191b1f] to-[#141618] text-neutral-200 border-2 border-black/90 rounded-md overflow-hidden shadow-[0_25px_50px_-12px_rgba(0,0,0,0.95)] font-sans border-t border-t-white/15 border-b-2 border-b-black/95 select-none"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
       {/* Visual File Drop Overlay */}
       {isDraggingFile && (
-        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-sky-500/20 backdrop-blur-md border-2 border-dashed border-sky-400">
-          <Upload className="w-16 h-16 text-sky-400 animate-bounce mb-3" />
-          <p className="text-xl font-bold text-white tracking-wide">DROP MIDI FILE TO AUDITION</p>
-          <p className="text-sm text-sky-200">Supports .mid and .midi files</p>
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-emerald-950/40 backdrop-blur-md border-2 border-dashed border-emerald-400">
+          <Upload className="w-16 h-16 text-emerald-400 animate-bounce mb-3" />
+          <p className="text-xl font-bold text-white tracking-widest font-mono">LOAD MIDI SEQUENCE // BUFFER READY</p>
+          <p className="text-sm text-emerald-300 font-mono">DROP .MID OR .MIDI FILE TO AUDITION</p>
         </div>
       )}
 
-      {/* Top Line 1: Brand, Active File, and Random Dice Button */}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-2.5 bg-[#141722] border-b border-slate-800/80">
+      {/* Top Channel Strip 1: Chassis Branding, Rack Screws, Active Sequence Tube, and Random Generator */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 bg-[#1c1e22] border-b-2 border-black/80 shadow-[0_1px_0_rgba(255,255,255,0.06)]">
         <div className="flex flex-wrap items-center gap-3">
-          {/* Brand Pill */}
-          <div className="flex items-center gap-2 px-3 py-1 bg-gradient-to-r from-sky-500/20 to-blue-600/20 border border-sky-500/30 rounded-full shadow-sm">
-            <img src="/icon.svg" alt="MidiLens Icon" className="w-4 h-4 rounded-full shadow-sm" />
-            <span className="text-xs font-mono font-bold uppercase tracking-wider text-sky-300">
-              MIDILENS
-            </span>
+          {/* Top-Left Flush Allen Rack-Screw */}
+          <svg className="w-3.5 h-3.5 text-neutral-600 opacity-60 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+            <circle cx="12" cy="12" r="10" stroke="#333" strokeWidth="1.5" fill="#18191c"/>
+            <polygon points="12,7 16.33,9.5 16.33,14.5 12,17 7.67,14.5 7.67,9.5" fill="#0d0e10" stroke="#2a2c30" strokeWidth="1"/>
+          </svg>
+
+          {/* Milled Aluminum Hardware Brandplate */}
+          <div className="flex items-center gap-2 px-3 py-1 bg-gradient-to-b from-[#2a2d33] to-[#1c1e22] border border-[#3d414a] rounded shadow-[0_1px_3px_rgba(0,0,0,0.8),inset_0_1px_0_rgba(255,255,255,0.15)]">
+            <img src="/icon.svg" alt="MidiLens Icon" className="w-3.5 h-3.5 rounded-full shadow" />
+            <div className="flex flex-col">
+              <span className="text-[11px] font-mono font-black tracking-[0.25em] text-white">
+                MIDILENS
+              </span>
+              <span className="text-[7.5px] font-mono font-bold tracking-[0.18em] text-neutral-400 -mt-0.5">
+                MIDI ANALYSER & PREVIEWER
+              </span>
+            </div>
           </div>
 
-          {/* Active File / Pattern Status Pill */}
+          {/* Recessed Amber LED Tube: Active Sequence */}
           <div
-            className="flex items-center gap-2 px-3 py-1 bg-[#1b1e2a] border border-amber-500/30 rounded-xl font-mono text-xs shadow-inner"
+            className="flex items-center gap-2 px-3 py-1 bg-[#0c0e10] border border-neutral-700/80 rounded shadow-[inset_0_2px_5px_rgba(0,0,0,0.9)] font-mono text-xs"
             title={`Active sequence: ${sequence.name} (${sequence.notes.length} notes, ${sequence.bpm} BPM)`}
           >
-            <Music className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-            <span className="text-[10px] text-slate-400 uppercase font-semibold">Active:</span>
-            <span className="font-bold text-amber-300 truncate max-w-[260px]">{sequence.name}</span>
-            <span className="text-[10px] text-slate-400 font-mono">({sequence.notes.length} notes)</span>
+            <Music className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+            <span className="silkscreen-label text-neutral-500">ACTIVE:</span>
+            <span className="font-bold text-amber-400 drop-shadow-[0_0_8px_rgba(245,158,11,0.5)] truncate max-w-[240px]">
+              {sequence.name}
+            </span>
+            <span className="text-[10px] text-neutral-500 font-mono">[{sequence.notes.length} N]</span>
           </div>
 
-          {/* Dice next to Active to pick random file from library */}
+          {/* Tactile Push-Button: Random Sequence */}
           <button
             onClick={handleRandomPick}
-            className="flex items-center gap-1.5 px-3 py-1 bg-[#202433] hover:bg-amber-500/20 border border-amber-500/40 hover:border-amber-400 text-amber-300 rounded-xl font-mono text-xs font-bold transition shadow-sm group"
+            className="hardware-button flex items-center gap-1.5 px-3 py-1 text-amber-400 rounded font-mono text-xs font-bold transition group"
             title={
               scannedFiles.length > 0
                 ? `Pick a random MIDI file from your library (${scannedFiles.length.toLocaleString()} files)`
-                : 'Pick a random factory pattern'
+                : 'Pick a random factory groove'
             }
           >
-            <Dices className="w-4 h-4 text-amber-400 group-hover:rotate-45 transition-transform" />
-            <span>Random</span>
+            <Dices className="w-3.5 h-3.5 text-amber-500 group-hover:rotate-45 transition-transform" />
+            <span className="tracking-wider uppercase text-[10px]">RANDOM</span>
           </button>
+        </div>
+
+        {/* Top-Right Flush Allen Rack-Screw */}
+        <div className="flex items-center gap-2">
+          <svg className="w-3.5 h-3.5 text-neutral-600 opacity-60 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+            <circle cx="12" cy="12" r="10" stroke="#333" strokeWidth="1.5" fill="#18191c"/>
+            <polygon points="12,7 16.33,9.5 16.33,14.5 12,17 7.67,14.5 7.67,9.5" fill="#0d0e10" stroke="#2a2c30" strokeWidth="1"/>
+          </svg>
         </div>
       </div>
 
-      {/* Line 2: Presets, Unified Library & Files Dropdown, Scan Folder, Open, Drag to DAW */}
-      <div className="flex items-center justify-between gap-2 px-4 py-2 bg-[#1b1e2a] border-b border-slate-800/80 overflow-x-auto no-scrollbar">
-        {/* Left: Preset Box + Unified Library & Dropdown Box */}
+      {/* Channel Strip 2: Presets, Stamped File Well, Scan Folder, Open, and Industrial Export MIDI */}
+      <div className="flex items-center justify-between gap-2 px-4 py-2 bg-[#181a1e] border-b-2 border-black/80 shadow-[0_1px_0_rgba(255,255,255,0.06)] overflow-x-auto no-scrollbar">
+        {/* Left: Preset Selector + Stamped Library Socket */}
         <div className="flex items-center gap-2 shrink-0">
-          {/* MidiLens Settings Preset Manager Button */}
+          {/* Preset Manager Button */}
           <button
             onClick={() => setShowPresetDrawer(true)}
-            className="flex items-center gap-1.5 bg-[#232736] hover:bg-slate-700/80 border border-sky-500/30 rounded-xl px-2.5 py-1.5 text-sky-300 font-mono font-bold text-xs shadow-sm transition group shrink-0"
+            className="hardware-button flex items-center gap-1.5 rounded px-2.5 py-1 text-amber-400 font-mono font-bold text-xs transition group shrink-0"
             title="Open Preset Manager to load/save scale, quantization & humanize settings"
           >
-            <Bookmark className="w-3.5 h-3.5 text-sky-400 group-hover:scale-110 transition-transform" />
-            <span className="truncate max-w-[110px] sm:max-w-[130px]">Preset: {activeLensPreset.name}</span>
-            <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+            <Bookmark className="w-3.5 h-3.5 text-amber-500 group-hover:scale-110 transition-transform" />
+            <span className="truncate max-w-[110px] sm:max-w-[130px] uppercase text-[10px] tracking-wider">PRESET: {activeLensPreset.name}</span>
+            <ChevronDown className="w-3 h-3 text-neutral-400" />
           </button>
 
-          {/* Unified Library Box & Narrow Drop Down List of Files */}
-          <div className="flex items-center bg-[#232736] border border-slate-700/60 rounded-xl p-0.5 shadow-sm shrink-0">
+          {/* Stamped Socket: Unified Library Dropdown & Stepper */}
+          <div className="flex items-center bg-[#101214] border border-neutral-700/80 rounded p-0.5 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)] shrink-0">
             <button
               onClick={() => handleStepItem(-1)}
-              className="p-1 text-slate-400 hover:text-white hover:bg-slate-700/50 rounded-lg transition"
+              className="p-1 text-neutral-400 hover:text-white hover:bg-neutral-800 rounded transition"
               title="Previous MIDI File / Pattern"
             >
               <ChevronLeft className="w-3.5 h-3.5" />
@@ -1125,7 +1214,7 @@ export const PluginSimulator: React.FC = () => {
 
             <div className="flex items-center px-1">
               <select
-                className="text-xs bg-transparent text-slate-200 font-semibold cursor-pointer px-1 py-1 focus:outline-none w-[125px] sm:w-[155px] max-w-[155px] truncate"
+                className="text-[11px] bg-transparent text-neutral-200 font-mono font-bold cursor-pointer px-1 py-0.5 focus:outline-none w-[130px] sm:w-[160px] max-w-[160px] truncate"
                 onChange={(e) => handleItemSelect(e.target.value)}
                 value={
                   activeSourceType === 'scanned' && currentScannedFileIdx >= 0
@@ -1140,7 +1229,7 @@ export const PluginSimulator: React.FC = () => {
               >
                 {activeSourceType === 'custom' && (
                   <optgroup label="📄 Active Open File">
-                    <option value="custom_file" className="bg-[#1b1e2a] text-slate-200">
+                    <option value="custom_file" className="bg-[#121418] text-neutral-200">
                       {sequence.name}.mid
                     </option>
                   </optgroup>
@@ -1149,21 +1238,16 @@ export const PluginSimulator: React.FC = () => {
                 {scannedFiles.length > 0 && (
                   <optgroup label={`📁 Scanned MIDI Files (${scannedFiles.length.toLocaleString()})`}>
                     {scannedFiles.slice(0, 1000).map((f, idx) => (
-                      <option key={`scanned_${idx}`} value={`scanned_${idx}`} className="bg-[#1b1e2a] text-slate-200">
+                      <option key={`scanned_${idx}`} value={`scanned_${idx}`} className="bg-[#121418] text-neutral-200">
                         {idx + 1}. {f.name}
                       </option>
                     ))}
-                    {scannedFiles.length > 1000 && (
-                      <option disabled className="bg-[#1b1e2a] text-slate-500">
-                        ... +{(scannedFiles.length - 1000).toLocaleString()} more in Library modal
-                      </option>
-                    )}
                   </optgroup>
                 )}
 
                 <optgroup label="🎵 Factory Grooves & Patterns">
                   {PRESET_SEQUENCES.map((p, idx) => (
-                    <option key={`preset_${idx}`} value={`preset_${idx}`} className="bg-[#1b1e2a] text-slate-200">
+                    <option key={`preset_${idx}`} value={`preset_${idx}`} className="bg-[#121418] text-neutral-200">
                       {p.name}
                     </option>
                   ))}
@@ -1173,22 +1257,22 @@ export const PluginSimulator: React.FC = () => {
 
             <button
               onClick={() => handleStepItem(1)}
-              className="p-1 text-slate-400 hover:text-white hover:bg-slate-700/50 rounded-lg transition mr-1"
+              className="p-1 text-neutral-400 hover:text-white hover:bg-neutral-800 rounded transition mr-0.5"
               title="Next MIDI File / Pattern"
             >
               <ChevronRight className="w-3.5 h-3.5" />
             </button>
 
-            {/* Integrated Compact Library Button */}
+            {/* Integrated Library Button */}
             <button
               onClick={() => setShowFolderModal(true)}
-              className="flex items-center gap-1.5 text-xs bg-[#171a24] hover:bg-amber-500/20 text-amber-300 border border-slate-700/70 hover:border-amber-500/40 rounded-lg px-2 py-1 font-mono transition shrink-0"
+              className="hardware-button flex items-center gap-1 text-[10px] text-amber-400 rounded px-2 py-0.5 font-mono uppercase tracking-wider transition shrink-0"
               title={`Open full searchable Library browser (${scannedFiles.length.toLocaleString()} files)`}
             >
-              <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
-              <span className="font-semibold">Library</span>
+              <FolderOpen className="w-3 h-3 text-amber-500" />
+              <span>Library</span>
               {scannedFiles.length > 0 && (
-                <span className="text-[10px] bg-amber-500/20 text-amber-300 px-1 py-0.2 rounded font-bold">
+                <span className="text-[9px] bg-amber-500/20 text-amber-400 px-1 rounded font-bold">
                   {scannedFiles.length > 999
                     ? `${(scannedFiles.length / 1000).toFixed(0)}k`
                     : scannedFiles.length}
@@ -1198,21 +1282,20 @@ export const PluginSimulator: React.FC = () => {
           </div>
         </div>
 
-        {/* Right: Scan Folder, Open, and Drag to DAW placed NEXT TO EACH OTHER */}
-        <div className="flex items-center gap-1.5 shrink-0">
-          {/* Scan Folder Button */}
+        {/* Right: Hardware Push-Buttons - Scan Folder, Open File, Heavy Industrial Export MIDI */}
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={handleScanFolderClick}
             disabled={isScanning}
-            className="flex items-center gap-1.5 text-xs bg-[#232736] hover:bg-slate-700/80 disabled:opacity-50 border border-slate-700/60 rounded-xl px-2.5 py-1.5 text-amber-300 font-medium transition shadow-sm whitespace-nowrap"
-            title="Scan a folder and all its subfolders on your computer for .mid files"
+            className="hardware-button flex items-center gap-1.5 text-xs text-amber-400 disabled:opacity-50 rounded px-2.5 py-1 font-mono uppercase tracking-wider transition whitespace-nowrap"
+            title="Scan a folder on your computer for .mid files"
           >
             {isScanning ? (
               <Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" />
             ) : (
-              <FolderSearch className="w-3.5 h-3.5 text-amber-400" />
+              <FolderSearch className="w-3.5 h-3.5 text-amber-500" />
             )}
-            <span>{isScanning ? `Scanning...` : 'Scan Folder'}</span>
+            <span className="text-[10px]">{isScanning ? `Scanning...` : 'Scan Folder'}</span>
           </button>
           <input
             ref={folderInputRef}
@@ -1225,7 +1308,6 @@ export const PluginSimulator: React.FC = () => {
             onChange={handleFolderScan}
           />
 
-          {/* Open Button */}
           <button
             onClick={() => {
               if (fileInputRef.current) {
@@ -1233,11 +1315,11 @@ export const PluginSimulator: React.FC = () => {
                 fileInputRef.current.click();
               }
             }}
-            className="flex items-center gap-1.5 text-xs bg-[#232736] hover:bg-slate-700/80 border border-slate-700/60 rounded-xl px-2.5 py-1.5 text-slate-300 font-medium transition shadow-sm whitespace-nowrap"
-            title="Open one or multiple MIDI (.mid) files from your computer"
+            className="hardware-button flex items-center gap-1.5 text-xs text-neutral-300 rounded px-2.5 py-1 font-mono uppercase tracking-wider transition whitespace-nowrap"
+            title="Open MIDI (.mid) files from your computer"
           >
-            <Upload className="w-3.5 h-3.5 text-slate-400" />
-            <span>Open</span>
+            <Upload className="w-3.5 h-3.5 text-neutral-400" />
+            <span className="text-[10px]">Open File</span>
           </button>
           <input
             ref={fileInputRef}
@@ -1248,17 +1330,17 @@ export const PluginSimulator: React.FC = () => {
             onChange={handleFileUpload}
           />
 
-          {/* Export MIDI / Drag to DAW Button */}
+          {/* Heavy Tactile Industrial Export Button */}
           <button
             onClick={() => setShowExportModal(true)}
             draggable
             onDragStart={(e) => {
               e.dataTransfer.setData('text/plain', sequence.name);
             }}
-            title="Export piano roll as Type 0 or Type 1 .mid file directly to your machine"
-            className="group relative flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold text-xs rounded-xl shadow-lg shadow-amber-500/20 cursor-grab active:cursor-grabbing transition whitespace-nowrap"
+            title="Export piano roll as Type 0 or Type 1 .mid file directly to your DAW"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-gradient-to-b from-[#f59e0b] via-[#d97706] to-[#b45309] text-black font-extrabold text-[11px] font-mono tracking-wider uppercase rounded shadow-[0_2px_4px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.4)] active:translate-y-0.5 border border-amber-300/40 cursor-grab active:cursor-grabbing transition whitespace-nowrap"
           >
-            <Download className="w-3.5 h-3.5 text-slate-950 group-hover:-translate-y-0.5 transition-transform" />
+            <Download className="w-3.5 h-3.5 text-black" />
             <span>EXPORT MIDI (.MID)</span>
           </button>
         </div>
@@ -1287,207 +1369,243 @@ export const PluginSimulator: React.FC = () => {
         </div>
       )}
 
-      {/* Control Strip (Scaler 3 style DAW toolbar) */}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-2.5 bg-[#171a24] border-b border-slate-800">
-        {/* Left: Transport + Undo/Redo + Digital LCD Counter */}
-        <div className="flex items-center gap-3">
-          {/* Transport Buttons */}
-          <div className="flex items-center gap-1.5 bg-[#202433] p-1 rounded-xl border border-slate-700/60">
+      {/* Channel Strip 3: Transport & Telemetry Deck */}
+      <div className="flex flex-wrap items-center justify-between gap-2.5 px-4 py-1.5 bg-[#15171a] border-b border-black/80 shadow-[0_1px_0_rgba(255,255,255,0.06)] overflow-x-auto no-scrollbar">
+        {/* Left: Vintage Tape Transport + Undo/Redo */}
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1 bg-[#0c0e10] p-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
             <button
               onClick={togglePlay}
-              className={`p-2 rounded-lg flex items-center justify-center transition ${
+              className={`p-1.5 rounded flex items-center justify-center transition active:translate-y-0.5 ${
                 isPlaying
-                  ? 'bg-sky-500 text-slate-950 hover:bg-sky-400 shadow-md shadow-sky-500/30'
-                  : 'bg-slate-800 text-slate-200 hover:bg-slate-700'
+                  ? 'bg-[#10b981] text-black font-extrabold shadow-[0_0_12px_rgba(16,185,129,0.85)] border border-emerald-300'
+                  : 'hardware-button text-neutral-300 hover:text-white'
               }`}
               title="Play / Pause (Space)"
             >
-              {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
+              {isPlaying ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current ml-0.5" />}
             </button>
 
             <button
               onClick={stopPlayback}
-              className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition"
+              className="hardware-button p-1.5 text-neutral-300 hover:text-white rounded transition active:translate-y-0.5"
               title="Stop & Rewind"
             >
-              <Square className="w-4 h-4" />
+              <Square className="w-3.5 h-3.5 fill-current" />
             </button>
 
             <button
               onClick={() => setParams((p) => ({ ...p, loop: !p.loop }))}
-              className={`p-2 rounded-lg transition ${
+              className={`p-1.5 rounded transition active:translate-y-0.5 ${
                 params.loop
-                  ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30'
-                  : 'bg-slate-800 text-slate-400'
+                  ? 'bg-[#d97706] text-black font-extrabold shadow-[0_0_10px_rgba(217,119,6,0.8)] border border-amber-300'
+                  : 'hardware-button text-neutral-400 hover:text-neutral-200'
               }`}
               title="Toggle Loop"
             >
-              <Repeat className="w-4 h-4" />
+              <Repeat className="w-3.5 h-3.5" />
             </button>
           </div>
 
-          {/* Undo / Redo Buttons */}
-          <div className="flex items-center gap-1 bg-[#202433] p-1 rounded-xl border border-slate-700/60">
+          <div className="flex items-center gap-0.5 bg-[#0c0e10] p-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
             <button
               onClick={handleUndo}
               disabled={pastHistory.length === 0}
-              className="relative p-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-35 disabled:hover:bg-slate-800 text-slate-200 rounded-lg transition"
+              className="hardware-button relative p-1.5 text-neutral-300 disabled:opacity-30 rounded transition active:translate-y-0.5"
               title={
                 pastHistory.length > 0
-                  ? `Undo ${pastHistory[pastHistory.length - 1].description} (${pastHistory.length} steps available, Cmd+Z)`
+                  ? `Undo ${pastHistory[pastHistory.length - 1].description} (${pastHistory.length} steps, Cmd+Z)`
                   : 'Undo (Cmd+Z)'
               }
             >
-              <Undo2 className="w-4 h-4" />
+              <Undo2 className="w-3.5 h-3.5" />
               {pastHistory.length > 0 && (
-                <span className="absolute -top-1 -right-1 text-[8px] font-mono font-bold bg-sky-500 text-slate-950 rounded-full px-1 py-0 leading-tight">
-                  {pastHistory.length > 12 ? '12+' : pastHistory.length}
+                <span className="absolute -top-1 -right-1 text-[7.5px] font-mono font-black bg-amber-500 text-black rounded px-1 py-0 leading-tight">
+                  {pastHistory.length > 9 ? '9+' : pastHistory.length}
                 </span>
               )}
             </button>
             <button
               onClick={handleRedo}
               disabled={futureHistory.length === 0}
-              className="p-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-35 disabled:hover:bg-slate-800 text-slate-200 rounded-lg transition"
-              title={
-                futureHistory.length > 0
-                  ? 'Redo (Cmd+Shift+Z / Ctrl+Y)'
-                  : 'Redo (Cmd+Shift+Z)'
-              }
+              className="hardware-button p-1.5 text-neutral-300 disabled:opacity-30 rounded transition active:translate-y-0.5"
+              title="Redo (Cmd+Shift+Z)"
             >
-              <Redo2 className="w-4 h-4" />
+              <Redo2 className="w-3.5 h-3.5" />
             </button>
           </div>
+        </div>
 
-          {/* Digital LCD Position & Tempo Counter */}
-          <div className="flex items-center gap-3 px-3.5 py-1.5 bg-[#0f1118] border border-slate-800 rounded-xl font-mono text-xs shadow-inner">
-            <div className="flex flex-col">
-              <span className="text-[9px] uppercase text-slate-500 tracking-wider">POSITION</span>
-              <span className="font-bold text-sky-400">
-                {String(currentBar).padStart(3, '0')}.{String(currentBeat).padStart(2, '0')}.{String(currentTick).padStart(2, '0')}
-              </span>
-            </div>
-            <div className="w-px h-6 bg-slate-800" />
-            <div className="flex flex-col">
-              <div className="flex items-center gap-1">
-                <span className="text-[9px] uppercase text-slate-500 tracking-wider">
-                  {params.syncMode === 'audition' ? 'TEMPO (MANUAL)' : 'TEMPO (DAW)'}
+        {/* Center: Deep Phosphor CRT Telemetry */}
+        <div className="flex items-center gap-3 px-3 py-1 bg-[#070d09] border border-emerald-950/80 rounded font-mono text-xs shadow-[inset_0_2px_6px_rgba(0,0,0,0.95)] shrink-0">
+          <div className="flex flex-col">
+            <span className="silkscreen-label text-neutral-500">POSITION</span>
+            <span className="font-bold text-emerald-400 phosphor-glow-green text-[11px]">
+              {String(currentBar).padStart(3, '0')}.{String(currentBeat).padStart(2, '0')}.{String(currentTick).padStart(2, '0')}
+            </span>
+          </div>
+          <div className="w-px h-5 bg-emerald-950/80" />
+          <div className="flex flex-col">
+            <div className="flex items-center gap-1">
+              <span className="silkscreen-label text-neutral-500">TEMPO</span>
+              {params.syncMode === 'daw' ? (
+                <span className="flex items-center gap-0.5 text-[8px] font-mono text-neutral-400 bg-neutral-900 border border-neutral-700 rounded px-1" title="Synced to DAW host timeline">
+                  <Lock className="w-2 h-2 text-neutral-400" />
+                  DAW
                 </span>
-                {params.syncMode === 'daw' ? (
-                  <span title="Locked to DAW host">
-                    <Lock className="w-2.5 h-2.5 text-slate-500" />
-                  </span>
-                ) : (
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" title="Free Audition: Manual BPM active" />
-                )}
-              </div>
-              {params.syncMode === 'audition' ? (
-                <div className="flex items-center gap-1 mt-0.5">
-                  <button
-                    onClick={() => handleTempoChange(sequence.bpm - 1)}
-                    className="w-4 h-4 rounded bg-slate-800 hover:bg-slate-700 text-amber-300 flex items-center justify-center text-[10px] transition"
-                    title="Decrease manual BPM (-1, Shift+Click -5)"
-                    onMouseDown={(e) => {
-                      if (e.shiftKey) handleTempoChange(sequence.bpm - 5);
-                    }}
-                  >
-                    <Minus className="w-2.5 h-2.5" />
-                  </button>
-
-                  <input
-                    type="number"
-                    min={20}
-                    max={320}
-                    value={tempoInputValue}
-                    onChange={(e) => {
-                      setTempoInputValue(e.target.value);
-                      const val = parseInt(e.target.value, 10);
-                      if (!isNaN(val) && val >= 20 && val <= 320) {
-                        handleTempoChange(val);
-                      }
-                    }}
-                    onBlur={() => {
-                      const val = parseInt(tempoInputValue, 10);
-                      if (isNaN(val) || val < 20 || val > 320) {
-                        setTempoInputValue(String(sequence.bpm));
-                      } else {
-                        handleTempoChange(val);
-                      }
-                    }}
-                    className="w-11 bg-slate-900 border border-slate-700/80 rounded px-1 py-0 text-center font-bold text-amber-400 text-xs focus:border-amber-400 focus:outline-none"
-                    title="Type manual BPM (20-320)"
-                  />
-
-                  <button
-                    onClick={() => handleTempoChange(sequence.bpm + 1)}
-                    className="w-4 h-4 rounded bg-slate-800 hover:bg-slate-700 text-amber-300 flex items-center justify-center text-[10px] transition"
-                    title="Increase manual BPM (+1, Shift+Click +5)"
-                    onMouseDown={(e) => {
-                      if (e.shiftKey) handleTempoChange(sequence.bpm + 5);
-                    }}
-                  >
-                    <Plus className="w-2.5 h-2.5" />
-                  </button>
-                  <span className="text-[10px] text-amber-400/80 font-bold ml-0.5">BPM</span>
-                </div>
               ) : (
-                <span className="font-bold text-amber-400 flex items-center gap-1" title="Synced to DAW host">
-                  {Math.round(sequence.bpm * params.speedMultiplier)} BPM
-                  <span className="text-[9px] text-slate-500 font-normal">[DAW]</span>
-                </span>
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shadow-[0_0_6px_rgba(245,158,11,0.8)]" title="Free Audition: Manual BPM active" />
               )}
             </div>
-            <div className="w-px h-6 bg-slate-800" />
-            <div className="flex flex-col">
-              <span className="text-[9px] uppercase text-slate-500 tracking-wider">TIME SIG</span>
-              <span className="font-bold text-slate-300">
-                {sequence.timeSigNumerator}/{sequence.timeSigDenominator}
-              </span>
+
+            <div className="flex items-center gap-1 mt-0.5">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  stepTempo(e.shiftKey ? -5 : -1);
+                }}
+                className="w-5 h-5 rounded bg-[#141619] hover:bg-neutral-800 active:bg-amber-500/20 text-amber-300 hover:text-amber-100 flex items-center justify-center transition border border-neutral-700/80 active:scale-95 cursor-pointer shadow-sm select-none"
+                title="Decrease BPM (-1, Shift+Click -5)"
+              >
+                <Minus className="w-3 h-3 pointer-events-none" />
+              </button>
+
+              <input
+                ref={tempoInputRef}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={tempoInputValue}
+                onMouseDown={handleTempoMouseDown}
+                onChange={(e) => {
+                  const cleaned = e.target.value.replace(/[^0-9]/g, '').slice(0, 3);
+                  setTempoInputValue(cleaned);
+                  const val = parseInt(cleaned, 10);
+                  if (!isNaN(val) && val >= 20 && val <= 320) {
+                    handleTempoChange(val);
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    stepTempo(e.shiftKey ? 5 : 1);
+                  } else if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    stepTempo(e.shiftKey ? -5 : -1);
+                  }
+                }}
+                onBlur={() => {
+                  const val = parseInt(tempoInputValue, 10);
+                  if (isNaN(val) || val < 20 || val > 320) {
+                    setTempoInputValue(String(sequence.bpm));
+                  } else {
+                    handleTempoChange(val);
+                  }
+                }}
+                className={`w-14 bg-[#0c0e10] border rounded px-1.5 py-0 text-center font-mono font-bold text-amber-400 text-xs focus:border-amber-400 focus:outline-none shadow-[inset_0_1px_3px_rgba(0,0,0,0.8)] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none cursor-ns-resize select-none transition-all ${
+                  isTempoDragging
+                    ? 'ring-2 ring-amber-400/80 border-amber-400 bg-[#171a1e] phosphor-glow-amber'
+                    : 'border-neutral-700/80 hover:border-amber-500/60'
+                }`}
+                title="Click & drag up/down to scrub BPM (Shift for fine control), or click to type"
+              />
+
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  stepTempo(e.shiftKey ? 5 : 1);
+                }}
+                className="w-5 h-5 rounded bg-[#141619] hover:bg-neutral-800 active:bg-amber-500/20 text-amber-300 hover:text-amber-100 flex items-center justify-center transition border border-neutral-700/80 active:scale-95 cursor-pointer shadow-sm select-none"
+                title="Increase BPM (+1, Shift+Click +5)"
+              >
+                <Plus className="w-3 h-3 pointer-events-none" />
+              </button>
+              <span className="text-[9px] text-amber-500 font-bold ml-0.5">BPM</span>
             </div>
           </div>
+          <div className="w-px h-5 bg-emerald-950/80" />
+          <div className="flex flex-col">
+            <span className="silkscreen-label text-neutral-500">METER</span>
+            <div className="flex items-center mt-0.5">
+              <select
+                value={`${sequence.timeSigNumerator || 4}/${sequence.timeSigDenominator || 4}`}
+                onChange={(e) => {
+                  const [numStr, denStr] = e.target.value.split('/');
+                  const num = parseInt(numStr, 10);
+                  const den = parseInt(denStr, 10);
+                  if (!isNaN(num) && !isNaN(den)) {
+                    pushHistorySnapshot(`Change Meter to ${num}/${den}`);
+                    setSequence((prev) => ({
+                      ...prev,
+                      timeSigNumerator: num,
+                      timeSigDenominator: den,
+                    }));
+                  }
+                }}
+                className="bg-[#0c0e10] border border-neutral-700/80 rounded px-1.5 py-0 text-center font-mono font-bold text-emerald-400 text-xs focus:border-emerald-400 focus:outline-none cursor-pointer shadow-[inset_0_1px_3px_rgba(0,0,0,0.8)] phosphor-glow-green"
+                title="Select musical time signature / meter"
+              >
+                <option value="4/4" className="bg-[#121418] text-neutral-200">4/4 (Common)</option>
+                <option value="3/4" className="bg-[#121418] text-neutral-200">3/4 (Waltz)</option>
+                <option value="2/4" className="bg-[#121418] text-neutral-200">2/4 (March)</option>
+                <option value="6/8" className="bg-[#121418] text-neutral-200">6/8 (Compound)</option>
+                <option value="12/8" className="bg-[#121418] text-neutral-200">12/8 (Blues)</option>
+                <option value="5/4" className="bg-[#121418] text-neutral-200">5/4 (Take Five)</option>
+                <option value="7/8" className="bg-[#121418] text-neutral-200">7/8 (Prog)</option>
+                <option value="9/8" className="bg-[#121418] text-neutral-200">9/8 (Compound Triple)</option>
+              </select>
+            </div>
+          </div>
+        </div>
 
-          {/* Timing Grid Selector */}
-          <div className="flex items-center gap-1.5 bg-[#202433] px-3 py-1.5 rounded-xl border border-slate-700/60 shadow-sm">
-            <span className="text-[10px] font-mono uppercase text-slate-400 font-semibold">Grid:</span>
+        {/* Right: Timing Grid + Detected Key */}
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+            <span className="silkscreen-label text-neutral-500">GRID:</span>
             <select
               value={params.quantizeGrid}
               onChange={(e) => setParams((p) => ({ ...p, quantizeGrid: e.target.value as QuantizeGrid }))}
               className="bg-transparent text-xs font-mono font-bold text-amber-400 focus:outline-none cursor-pointer"
             >
               {Object.entries(QUANTIZE_GRID_DIVISIONS).map(([k, v]) => (
-                <option key={k} value={k} className="bg-[#1b1e2a] text-slate-200">
+                <option key={k} value={k} className="bg-[#121418] text-neutral-200">
                   {v.name}
                 </option>
               ))}
             </select>
             <button
               onClick={applyTimingQuantize}
-              className="px-2 py-1 text-[10px] font-mono font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition ml-1"
+              className="hardware-button px-2 py-0.5 text-[9.5px] font-mono font-bold text-amber-400 rounded transition ml-1 uppercase"
               title="Quantize note start times and lengths to grid"
             >
               Q-Time
             </button>
           </div>
 
-          {/* Original Detected Key Box (Placed next to Grid box) */}
-          <div className="flex items-center gap-1.5 bg-[#202433] px-3 py-1.5 rounded-xl border border-slate-700/60 shadow-sm" title="Detected original MIDI key">
-            <span className="text-[10px] font-mono uppercase text-slate-400 font-semibold">Orig:</span>
-            <span className="text-xs font-bold text-sky-300 font-mono">{keyResult.keyName}</span>
+          <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]" title="Detected original MIDI key">
+            <span className="silkscreen-label text-neutral-500">ORIG:</span>
+            <span className="text-xs font-bold text-emerald-400 font-mono phosphor-glow-green">{keyResult.keyName}</span>
           </div>
         </div>
+      </div>
 
-        {/* Right: Scale, Sync to project key, Target key & Humanise */}
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Scaler 3 Style Active Scale Pill Box with Q-Scale */}
-          <div className="flex items-center gap-2 bg-[#202433] px-3 py-1.5 rounded-xl border border-slate-700/60 shadow-sm">
-            <span className="text-[10px] font-mono uppercase text-slate-400 font-semibold">Scale:</span>
+      {/* Channel Strip 4: Musical Scale Matrix & PROMINENT MODULE SWITCHES */}
+      <div className="flex flex-wrap items-center justify-between gap-2.5 px-4 py-2 bg-[#181a1d] border-b-2 border-black/90 shadow-[0_1px_0_rgba(255,255,255,0.06)] overflow-x-auto no-scrollbar">
+        {/* Left: Active Scale Matrix */}
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+            <span className="silkscreen-label text-neutral-500">SCALE:</span>
             <select
               value={params.scaleRoot}
               onChange={(e) => setParams((p) => ({ ...p, scaleRoot: Number(e.target.value) }))}
-              className="bg-transparent text-xs font-mono font-bold text-sky-400 focus:outline-none cursor-pointer"
+              className="bg-transparent text-xs font-mono font-bold text-amber-400 focus:outline-none cursor-pointer"
             >
               {Array.from({ length: 12 }).map((_, i) => (
-                <option key={i} value={i} className="bg-[#1b1e2a] text-slate-200">
+                <option key={i} value={i} className="bg-[#121418] text-neutral-200">
                   {getNoteName(i)}
                 </option>
               ))}
@@ -1496,10 +1614,10 @@ export const PluginSimulator: React.FC = () => {
             <select
               value={params.scaleType}
               onChange={(e) => setParams((p) => ({ ...p, scaleType: e.target.value as ScaleType }))}
-              className="bg-transparent text-xs font-mono text-sky-300 focus:outline-none cursor-pointer max-w-[125px] truncate"
+              className="bg-transparent text-xs font-mono text-amber-300 focus:outline-none cursor-pointer max-w-[125px] truncate"
             >
               {Object.entries(SCALE_DEFINITIONS).map(([k, v]) => (
-                <option key={k} value={k} className="bg-[#1b1e2a] text-slate-200">
+                <option key={k} value={k} className="bg-[#121418] text-neutral-200">
                   {v.name}
                 </option>
               ))}
@@ -1507,223 +1625,175 @@ export const PluginSimulator: React.FC = () => {
 
             <button
               onClick={() => setParams((p) => ({ ...p, scaleLock: !p.scaleLock }))}
-              className={`p-1 rounded-lg transition ${
-                params.scaleLock ? 'text-sky-400 bg-sky-950/60' : 'text-slate-600 hover:text-slate-400'
+              className={`p-1 rounded transition ${
+                params.scaleLock ? 'text-amber-400 bg-amber-500/20' : 'text-neutral-500 hover:text-neutral-300'
               }`}
               title={params.scaleLock ? 'Scale Lock ON' : 'Scale Lock OFF'}
             >
-              {params.scaleLock ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
+              {params.scaleLock ? <Lock className="w-3 h-3" /> : <Unlock className="w-3 h-3" />}
             </button>
 
             <button
               onClick={applyScaleQuantize}
-              className="px-2 py-0.5 text-[10px] font-mono font-bold bg-sky-900/60 hover:bg-sky-800 text-sky-200 border border-sky-700/50 rounded-lg transition"
+              className="hardware-button px-2 py-0.5 text-[9.5px] font-mono font-bold text-amber-400 rounded transition uppercase"
               title="Snap all existing notes to nearest in-scale pitch"
             >
               Q-Scale
             </button>
           </div>
 
-          {/* Sync to project key Box */}
-          <div className="flex items-center gap-1.5 bg-[#202433] px-3 py-1.5 rounded-xl border border-slate-700/60 shadow-sm">
-            <span className="text-[10px] font-mono uppercase text-slate-400 font-semibold">Project:</span>
+          {/* Project Key & Target Match */}
+          <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+            <span className="silkscreen-label text-neutral-500">PROJECT:</span>
             <select
               value={params.projectKeyRoot}
               onChange={(e) => setParams((p) => ({ ...p, projectKeyRoot: Number(e.target.value) }))}
               className="bg-transparent text-xs font-mono font-bold text-emerald-400 focus:outline-none cursor-pointer"
-              title="Current host DAW project root note"
             >
               {Array.from({ length: 12 }).map((_, i) => (
-                <option key={i} value={i} className="bg-[#1b1e2a] text-slate-200">
+                <option key={i} value={i} className="bg-[#121418] text-neutral-200">
                   {getNoteName(i)}
                 </option>
               ))}
             </select>
-
-            <select
-              value={params.projectScaleType}
-              onChange={(e) => setParams((p) => ({ ...p, projectScaleType: e.target.value as ScaleType }))}
-              className="bg-transparent text-xs font-mono text-emerald-300 focus:outline-none cursor-pointer max-w-[105px] truncate"
-              title="Current host DAW project scale type"
-            >
-              {Object.entries(SCALE_DEFINITIONS).map(([k, v]) => (
-                <option key={k} value={k} className="bg-[#1b1e2a] text-slate-200">
-                  {v.name}
-                </option>
-              ))}
-            </select>
-
             <button
               onClick={syncToProjectKey}
-              className="flex items-center gap-1 px-2.5 py-0.5 text-[10px] font-mono font-bold bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 rounded-lg transition"
-              title="Sync to project key: sets active scale to project key and transposes sequence"
+              className="hardware-button px-2 py-0.5 text-[9.5px] font-mono font-bold text-emerald-400 rounded transition uppercase"
+              title="Sync to project key"
             >
-              <Zap className="w-3 h-3 text-emerald-400" />
-              <span>Sync</span>
+              Sync
             </button>
           </div>
+        </div>
 
-          {/* Target key Box (Selectable scale) */}
-          <div className="flex items-center gap-1.5 bg-[#202433] px-3 py-1.5 rounded-xl border border-slate-700/60 shadow-sm">
-            <span className="text-[10px] font-mono uppercase text-slate-400 font-semibold">Target:</span>
-            <select
-              value={params.targetKeyRoot}
-              onChange={(e) => setParams((p) => ({ ...p, targetKeyRoot: Number(e.target.value) }))}
-              className="bg-transparent text-xs font-mono font-bold text-amber-400 focus:outline-none cursor-pointer"
-              title="Selectable target root key"
-            >
-              {Array.from({ length: 12 }).map((_, i) => (
-                <option key={i} value={i} className="bg-[#1b1e2a] text-slate-200">
-                  {getNoteName(i)}
-                </option>
-              ))}
-            </select>
-
-            <select
-              value={params.targetScaleType}
-              onChange={(e) => setParams((p) => ({ ...p, targetScaleType: e.target.value as ScaleType }))}
-              className="bg-transparent text-xs font-mono text-amber-300 focus:outline-none cursor-pointer max-w-[110px] truncate"
-              title="Selectable target scale"
-            >
-              {Object.entries(SCALE_DEFINITIONS).map(([k, v]) => (
-                <option key={k} value={k} className="bg-[#1b1e2a] text-slate-200">
-                  {v.name}
-                </option>
-              ))}
-            </select>
-
-            <button
-              onClick={applyTargetKeyMatch}
-              className="flex items-center gap-1 px-2.5 py-0.5 text-[10px] font-mono font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg transition"
-              title="Set active scale to Target Key and transpose sequence"
-            >
-              <Sparkles className="w-3 h-3 text-amber-400" />
-              <span>Match</span>
-            </button>
-          </div>
-
-          {/* Humanise Button (Placed next to Target box) */}
+        {/* Right: PROMINENT MODULE TOGGLE SWITCHES - HIGH VISIBILITY */}
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Mechanical Rocker Switch: Humanise */}
           <button
             onClick={() => setShowHumanizeModal(!showHumanizeModal)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono font-bold bg-gradient-to-r from-purple-900/50 to-indigo-900/50 hover:from-purple-800/60 hover:to-indigo-800/60 text-purple-200 border border-purple-500/30 rounded-xl transition shadow-sm"
-            title="Open Humanise velocity jitter & timing swing controls"
+            className={`flex items-center gap-1.5 px-3 py-1 text-xs font-mono font-bold rounded transition border ${
+              showHumanizeModal
+                ? 'bg-purple-900/60 text-purple-200 border-purple-400 shadow-[0_0_8px_rgba(168,85,247,0.5)]'
+                : 'hardware-button text-purple-300'
+            }`}
+            title="Toggle Humanise velocity jitter & timing swing controls panel"
           >
             <Wand2 className="w-3.5 h-3.5 text-purple-300" />
-            <span>Humanise</span>
+            <span className="uppercase text-[10.5px] tracking-wider">HUMANISE</span>
           </button>
 
-          {/* Arpeggiator Module Toggle Button */}
+          {/* Mechanical Rocker Switch: ARPEGGIATOR MODULE */}
           <button
             onClick={() => setShowArpPanel(!showArpPanel)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono font-bold rounded-xl transition shadow-sm border ${
-              params.arpEnabled || showArpPanel
-                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                : 'bg-[#202433] text-slate-400 border-slate-700/60 hover:text-white'
+            className={`flex items-center gap-2 px-3.5 py-1 text-xs font-mono font-bold rounded transition border shadow-md ${
+              showArpPanel || params.arpEnabled
+                ? 'bg-gradient-to-b from-amber-500 to-amber-700 text-black font-extrabold border-amber-300 shadow-[0_0_12px_rgba(245,158,11,0.7)]'
+                : 'bg-[#121418] text-amber-400 border-amber-500/50 hover:border-amber-400 hover:bg-neutral-900'
             }`}
-            title="Toggle Arpeggiator control panel"
+            title="Click to toggle Arpeggiator control panel (currently below velocity strip)"
           >
-            <Zap className={`w-3.5 h-3.5 ${params.arpEnabled ? 'text-amber-400 animate-pulse' : 'text-slate-400'}`} />
-            <span>Arpeggiator</span>
-            {params.arpEnabled && <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />}
+            <Zap className={`w-4 h-4 ${showArpPanel || params.arpEnabled ? 'text-black fill-current animate-pulse' : 'text-amber-400'}`} />
+            <span className="uppercase text-[11px] tracking-widest font-black">
+              ARPEGGIATOR {showArpPanel ? '[ON]' : '[OFF]'}
+            </span>
           </button>
 
-          {/* Chord Visualizer Toggle Button */}
+          {/* Mechanical Rocker Switch: CHORD VISUALIZER / DETECTOR MODULE */}
           <button
             onClick={() => setShowChordVisualizer(!showChordVisualizer)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono font-bold rounded-xl transition shadow-sm border ${
+            className={`flex items-center gap-2 px-3.5 py-1 text-xs font-mono font-bold rounded transition border shadow-md ${
               showChordVisualizer
-                ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
-                : 'bg-[#202433] text-slate-400 border-slate-700/60 hover:text-white'
+                ? 'bg-gradient-to-b from-emerald-500 to-emerald-700 text-black font-extrabold border-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.7)]'
+                : 'bg-[#121418] text-emerald-400 border-emerald-500/50 hover:border-emerald-400 hover:bg-neutral-900'
             }`}
-            title="Toggle real-time Chord Analysis & Audio Visualizer"
+            title="Click to toggle Chord Analysis & Visualizer panel (currently at the bottom)"
           >
-            <Activity className="w-3.5 h-3.5 text-sky-400" />
-            <span>Chord Visualizer</span>
+            <Activity className={`w-4 h-4 ${showChordVisualizer ? 'text-black' : 'text-emerald-400'}`} />
+            <span className="uppercase text-[11px] tracking-widest font-black">
+              VISUALIZER {showChordVisualizer ? '[ON]' : '[OFF]'}
+            </span>
           </button>
         </div>
       </div>
 
-      {/* Humanize Dropdown Banner */}
-      {showHumanizeModal && (
-        <div className="px-5 py-3 bg-[#1b1e2a] border-b border-slate-800 flex flex-wrap items-center justify-between gap-4 text-xs font-mono animate-in slide-in-from-top-2 duration-150">
-          <div className="flex flex-wrap items-center gap-4">
-            <div className="flex items-center gap-2">
-              <span className="text-slate-400">Velocity Jitter:</span>
-              <span className="text-amber-400 font-bold">&plusmn;{humanizeVelRange}</span>
-              <input
-                type="range"
-                min={2}
-                max={40}
-                value={humanizeVelRange}
-                onChange={(e) => setHumanizeVelRange(Number(e.target.value))}
-                className="w-24 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
-              />
+      {/* Humanize Dropdown Banner (Collapsible) */}
+      <div
+        className={`grid transition-all duration-300 ease-in-out bg-[#14161a] ${
+          showHumanizeModal
+            ? 'grid-rows-[1fr] opacity-100 py-3 border-b-2 border-black/90 shadow-inner'
+            : 'grid-rows-[0fr] opacity-0 py-0 pointer-events-none'
+        }`}
+      >
+        <div className="overflow-hidden">
+          <div className="px-5 flex flex-wrap items-center justify-between gap-4 text-xs font-mono">
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="flex items-center gap-2">
+                <span className="text-neutral-400">Velocity Jitter:</span>
+                <span className="text-amber-400 font-bold">&plusmn;{humanizeVelRange}</span>
+                <input
+                  type="range"
+                  min={2}
+                  max={40}
+                  value={humanizeVelRange}
+                  onChange={(e) => setHumanizeVelRange(Number(e.target.value))}
+                  className="w-24 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-amber-500"
+                />
+                <button
+                  onClick={applyHumanizeVelocity}
+                  className="hardware-button px-2.5 py-1 text-amber-400 font-bold rounded transition uppercase text-[10px]"
+                >
+                  Apply Jitter
+                </button>
+              </div>
+
+              <div className="w-px h-6 bg-neutral-800" />
+
+              <div className="flex items-center gap-2">
+                <span className="text-neutral-400">Custom Range:</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={127}
+                  value={randomMinVel}
+                  onChange={(e) => setRandomMinVel(Number(e.target.value))}
+                  className="w-12 px-1.5 py-0.5 bg-[#0c0e10] border border-neutral-700 rounded text-center text-neutral-200"
+                />
+                <span className="text-neutral-500">to</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={127}
+                  value={randomMaxVel}
+                  onChange={(e) => setRandomMaxVel(Number(e.target.value))}
+                  className="w-12 px-1.5 py-0.5 bg-[#0c0e10] border border-neutral-700 rounded text-center text-neutral-200"
+                />
+                <button
+                  onClick={applyRandomizeVelocityRange}
+                  className="hardware-button px-2.5 py-1 text-purple-300 font-bold rounded transition uppercase text-[10px]"
+                >
+                  Randomize
+                </button>
+              </div>
+
+              <div className="w-px h-6 bg-neutral-800" />
+
               <button
-                onClick={applyHumanizeVelocity}
-                className="px-2.5 py-1 bg-amber-500 text-slate-950 font-bold rounded-lg hover:bg-amber-400 transition"
+                onClick={applyHumanizeTiming}
+                className="hardware-button px-2.5 py-1 text-neutral-200 font-bold rounded transition uppercase text-[10px]"
               >
-                Apply Jitter
+                Humanise Timing
               </button>
             </div>
 
-            <div className="w-px h-6 bg-slate-800" />
-
-            <div className="flex items-center gap-2">
-              <span className="text-slate-400">Custom Range:</span>
-              <input
-                type="number"
-                min={1}
-                max={127}
-                value={randomMinVel}
-                onChange={(e) => setRandomMinVel(Number(e.target.value))}
-                className="w-12 px-1.5 py-0.5 bg-[#0f1118] border border-slate-700 rounded-md text-center text-slate-200"
-              />
-              <span className="text-slate-500">to</span>
-              <input
-                type="number"
-                min={1}
-                max={127}
-                value={randomMaxVel}
-                onChange={(e) => setRandomMaxVel(Number(e.target.value))}
-                className="w-12 px-1.5 py-0.5 bg-[#0f1118] border border-slate-700 rounded-md text-center text-slate-200"
-              />
-              <button
-                onClick={applyRandomizeVelocityRange}
-                className="px-2.5 py-1 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-lg transition"
-              >
-                Randomize
-              </button>
-            </div>
-
-            <div className="w-px h-6 bg-slate-800" />
-
-            <button
-              onClick={applyHumanizeTiming}
-              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium rounded-lg transition"
-            >
-              Humanise Timing
+            <button onClick={() => setShowHumanizeModal(false)} className="text-neutral-400 hover:text-white p-1">
+              <X className="w-4 h-4" />
             </button>
           </div>
-
-          <button onClick={() => setShowHumanizeModal(false)} className="text-slate-400 hover:text-white p-1">
-            <X className="w-4 h-4" />
-          </button>
         </div>
-      )}
+      </div>
 
-      {/* Arpeggiator Control Module Panel */}
-      {showArpPanel && (
-        <div className="p-2 bg-[#141722] border-b border-slate-800">
-          <ArpeggiatorControls
-            params={params}
-            onParamsChange={setParams}
-            onApplyArpToSequence={handleApplyArpToSequence}
-          />
-        </div>
-      )}
-
-      {/* Main Piano Roll Canvas Container */}
-      <div className="flex-1 w-full min-h-[380px] p-2 bg-[#141722]">
+      {/* 1. Main Piano Roll Canvas Container - Immediately below Key Information */}
+      <div className="flex-1 w-full min-h-[380px] p-2 bg-[#0a0c0e] border-b-2 border-black/80 shadow-[inset_0_4px_12px_rgba(0,0,0,0.95)]">
         <PianoRoll
           notes={sequence.notes}
           totalLengthPpq={sequence.totalLengthPpq}
@@ -1732,8 +1802,10 @@ export const PluginSimulator: React.FC = () => {
           scaleRoot={params.scaleRoot}
           scaleType={params.scaleType}
           scaleLock={params.scaleLock}
+          timeSigNumerator={sequence.timeSigNumerator || 4}
+          timeSigDenominator={sequence.timeSigDenominator || 4}
+          onSnapshotBeforeChange={(description) => pushHistorySnapshot(description)}
           onNotesChange={(newNotes) => {
-            pushHistorySnapshot('Note Edit');
             setSequence((s) => ({ ...s, notes: newNotes }));
           }}
           onSeek={handleSeek}
@@ -1746,159 +1818,116 @@ export const PluginSimulator: React.FC = () => {
         />
       </div>
 
-      {/* Real-time Chord Analysis & Audio Oscilloscope Visualizer */}
-      {showChordVisualizer && (
-        <div className="p-2 bg-[#141722] border-t border-slate-800">
-          <ChordVisualizer
-            activePitches={activePitches}
-            sequenceNotes={sequence.notes}
-            playheadPpq={playheadPpq}
-            selectedNoteIds={selectedNoteIds}
-            scaleRoot={params.scaleRoot}
-            scaleType={params.scaleType}
-          />
-        </div>
-      )}
+      {/* 2. Velocity Heatmap, Transpose, Diatonic Harmonise & Speed Controls Strip - Below Piano Roll */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 bg-[#16181b] border-t border-b border-black/80 shadow-[0_2px_6px_rgba(0,0,0,0.7)] text-xs font-mono overflow-x-auto no-scrollbar">
+        {/* Left: Bottom-Left Rack Screw + Recessed Velocity Heatmap Well */}
+        <div className="flex items-center gap-2.5 shrink-0">
+          {/* Bottom-Left Flush Allen Rack Screw */}
+          <svg className="w-3.5 h-3.5 text-neutral-600 opacity-60 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+            <circle cx="12" cy="12" r="10" stroke="#333" strokeWidth="1.5" fill="#18191c"/>
+            <polygon points="12,7 16.33,9.5 16.33,14.5 12,17 7.67,14.5 7.67,9.5" fill="#0d0e10" stroke="#2a2c30" strokeWidth="1"/>
+          </svg>
 
-      {/* Bottom Footer / Controls Bar (Scaler 3 style bottom strip) */}
-      <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-3 bg-[#1b1e2a] border-t border-slate-800/80 text-xs font-mono">
-        {/* Interactive Velocity Heatmap & Proportional Slider + Select All Button */}
-        <div className="flex items-center gap-3">
-          <span className="text-slate-400 uppercase font-semibold text-[10px] tracking-wider flex items-center gap-1.5">
-            Velocity:
-          </span>
+          {/* Stamped Recessed Velocity Well */}
+          <div className="flex items-center gap-2 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+            <span className="silkscreen-label text-neutral-500">VELOCITY:</span>
 
-          {/* Interactive Heatmap Slider Track */}
-          <div className="flex items-center gap-2">
-            <span className="text-emerald-400 font-bold text-[9px] shrink-0">Soft (1)</span>
+            <span className="text-emerald-400 font-bold text-[8.5px] font-mono shrink-0">1</span>
 
             <div
               ref={heatmapBarRef}
               onMouseDown={handleVelocityMouseDown}
-              className={`relative w-44 sm:w-56 h-6 rounded-lg bg-gradient-to-r from-emerald-400 via-amber-300 to-rose-500 border border-slate-700/80 shadow-inner flex items-center select-none cursor-pointer transition-all ${
-                hasSelectedNotes ? 'ring-2 ring-sky-500/40 shadow-lg' : 'hover:border-slate-500'
+              className={`relative w-36 sm:w-48 h-6 rounded bg-gradient-to-r from-emerald-500 via-amber-400 to-rose-500 border border-neutral-700 shadow-inner flex items-center select-none cursor-pointer transition-all ${
+                hasSelectedNotes ? 'ring-2 ring-amber-400/60 shadow-lg' : 'hover:border-neutral-500'
               }`}
               title={
                 hasSelectedNotes
-                  ? `Velocity: ${avgMidiVelocity} / 127 · Drag slider up/down or across track to adjust`
+                  ? `Velocity: ${avgMidiVelocity} / 127 · Drag slider across track to adjust`
                   : 'Select note(s) to view and adjust velocity, or click to adjust all'
               }
             >
-              {/* If notes are selected, display interactive line/slider thumb */}
-              {hasSelectedNotes ? (
+              {/* If notes are selected, display interactive glowing line & slider thumb (unobstructed) */}
+              {hasSelectedNotes && (
                 <>
-                  {/* Glowing Vertical Slider Line */}
                   <div
                     className="absolute top-0 bottom-0 w-1 bg-white shadow-[0_0_8px_rgba(255,255,255,0.95)] -translate-x-1/2 pointer-events-none z-10"
                     style={{ left: `${linePercent}%` }}
                   />
-
-                  {/* Top Slider Pin Thumb */}
                   <div
-                    className="absolute -top-1.5 w-3.5 h-3.5 bg-white border-2 border-slate-900 rounded-full shadow-md -translate-x-1/2 z-20 hover:scale-125 transition-transform"
+                    className="absolute top-0.5 bottom-0.5 w-3 bg-white border border-black rounded-sm shadow-md -translate-x-1/2 z-20 pointer-events-none"
                     style={{ left: `${linePercent}%` }}
                   />
-
-                  {/* Bottom Slider Pin Thumb */}
-                  <div
-                    className="absolute -bottom-1.5 w-3.5 h-3.5 bg-white border-2 border-slate-900 rounded-full shadow-md -translate-x-1/2 z-20 hover:scale-125 transition-transform"
-                    style={{ left: `${linePercent}%` }}
-                  />
-
-                  {/* Value Tooltip Badge */}
-                  <div
-                    className="absolute -top-7 -translate-x-1/2 bg-[#0d1017] border border-amber-400/80 px-2 py-0.5 rounded text-[10px] font-mono font-bold text-amber-300 shadow-xl pointer-events-none whitespace-nowrap z-30"
-                    style={{ left: `${linePercent}%` }}
-                  >
-                    {selectedNotes.length === 1
-                      ? `Vel: ${avgMidiVelocity}`
-                      : `Avg: ${avgMidiVelocity} (${selectedNotes.length} notes)`}
-                  </div>
                 </>
-              ) : (
-                <div className="w-full text-center text-[9px] text-slate-900/80 font-bold tracking-tight pointer-events-none truncate px-1">
-                  Click to set velocity
-                </div>
               )}
             </div>
 
-            <span className="text-rose-400 font-bold text-[9px] shrink-0">Loud (127)</span>
+            <span className="text-rose-400 font-bold text-[8.5px] font-mono shrink-0">127</span>
 
             {/* Micro Stepper & Direct Numeric Value */}
-            {hasSelectedNotes && (
-              <div className="flex items-center gap-1 bg-[#10131d] px-1.5 py-0.5 rounded-lg border border-slate-700/80 ml-1">
-                <button
-                  onClick={() => {
-                    const newVel = Math.max(0.01, (avgMidiVelocity - 2) / 127);
-                    applyVelocityToSelectedNotes(newVel, true);
-                  }}
-                  className="w-4 h-4 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center justify-center text-[10px] transition active:scale-95"
-                  title="Decrease velocity (-2, Shift-click -8)"
-                  onMouseDown={(e) => {
-                    if (e.shiftKey) {
-                      e.stopPropagation();
-                      const newVel = Math.max(0.01, (avgMidiVelocity - 8) / 127);
-                      applyVelocityToSelectedNotes(newVel, true);
-                    }
-                  }}
-                >
-                  <Minus className="w-2.5 h-2.5" />
-                </button>
+            <div className="flex items-center gap-1 bg-[#15181b] px-1.5 py-0.5 rounded border border-neutral-700 ml-1">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const newVel = Math.max(0.01, (avgMidiVelocity - (e.shiftKey ? 8 : 2)) / 127);
+                  applyVelocityToSelectedNotes(newVel, true);
+                }}
+                className="w-4 h-4 rounded bg-[#0c0e10] hover:bg-neutral-800 text-neutral-200 flex items-center justify-center text-[10px] transition active:scale-95 cursor-pointer"
+                title="Decrease velocity (-2, Shift-click -8)"
+              >
+                <Minus className="w-2.5 h-2.5 pointer-events-none" />
+              </button>
 
-                <span className="font-mono font-bold text-amber-400 text-[11px] min-w-[28px] text-center">
-                  {avgMidiVelocity}
-                </span>
+              <span className="font-mono font-bold text-amber-400 phosphor-glow-amber text-[10.5px] min-w-[28px] text-center select-none">
+                {hasSelectedNotes ? avgMidiVelocity : '--'}
+              </span>
 
-                <button
-                  onClick={() => {
-                    const newVel = Math.min(1.0, (avgMidiVelocity + 2) / 127);
-                    applyVelocityToSelectedNotes(newVel, true);
-                  }}
-                  className="w-4 h-4 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center justify-center text-[10px] transition active:scale-95"
-                  title="Increase velocity (+2, Shift-click +8)"
-                  onMouseDown={(e) => {
-                    if (e.shiftKey) {
-                      e.stopPropagation();
-                      const newVel = Math.min(1.0, (avgMidiVelocity + 8) / 127);
-                      applyVelocityToSelectedNotes(newVel, true);
-                    }
-                  }}
-                >
-                  <Plus className="w-2.5 h-2.5" />
-                </button>
-              </div>
-            )}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const newVel = Math.min(1.0, (avgMidiVelocity + (e.shiftKey ? 8 : 2)) / 127);
+                  applyVelocityToSelectedNotes(newVel, true);
+                }}
+                className="w-4 h-4 rounded bg-[#0c0e10] hover:bg-neutral-800 text-neutral-200 flex items-center justify-center text-[10px] transition active:scale-95 cursor-pointer"
+                title="Increase velocity (+2, Shift-click +8)"
+              >
+                <Plus className="w-2.5 h-2.5 pointer-events-none" />
+              </button>
+            </div>
           </div>
 
-          {/* Select All Button next to the velocity heatmap */}
+          {/* Select All Button */}
           <button
             onClick={handleToggleSelectAllNotes}
-            className={`px-2.5 py-1 text-[11px] font-mono font-bold rounded-xl border transition flex items-center gap-1.5 shrink-0 ${
+            className={`hardware-button px-2.5 py-1 text-[10px] font-mono font-bold rounded border transition flex items-center gap-1.5 shrink-0 uppercase tracking-wider ${
               selectedNoteIds.size === sequence.notes.length && sequence.notes.length > 0
-                ? 'bg-sky-500/20 text-sky-300 border-sky-500/40 shadow-sm'
-                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700/80 hover:text-white'
+                ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                : 'text-neutral-300 hover:text-white'
             }`}
             title="Select all notes in piano roll (Cmd+A / Ctrl+A)"
           >
-            <CheckSquare className="w-3.5 h-3.5 text-sky-400" />
+            <CheckSquare className="w-3.5 h-3.5 text-amber-400" />
             <span>
               {selectedNoteIds.size === sequence.notes.length && sequence.notes.length > 0
                 ? 'Deselect All'
                 : 'Select All'}
             </span>
             {selectedNoteIds.size > 0 && (
-              <span className="text-[10px] text-sky-400 font-mono">
-                ({selectedNoteIds.size})
+              <span className="text-[9px] text-amber-400 font-mono">
+                [{selectedNoteIds.size}]
               </span>
             )}
           </button>
         </div>
 
-        {/* Realtime Transpose, Harmonise & Speed Controls */}
-        <div className="flex flex-wrap items-center gap-4">
-          {/* Transpose Slider */}
-          <div className="flex items-center gap-2">
-            <span className="text-slate-400 font-semibold text-[11px]">Transpose:</span>
+        {/* Right: Transpose, Diatonic Harmonise, Speed Multiplier, and Bottom-Right Rack Screw */}
+        <div className="flex flex-wrap items-center gap-3 shrink-0">
+          {/* Stamped Socket: Transpose */}
+          <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+            <span className="silkscreen-label text-neutral-500">TRANSPOSE:</span>
             <input
               type="range"
               min={-24}
@@ -1906,66 +1935,62 @@ export const PluginSimulator: React.FC = () => {
               step={1}
               value={params.transpose}
               onChange={(e) => setParams((p) => ({ ...p, transpose: Number(e.target.value) }))}
-              className="w-24 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
+              className="w-20 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-amber-500"
             />
-            <span className="font-bold text-amber-400 min-w-[36px]">
+            <span className="font-bold text-amber-400 phosphor-glow-amber text-xs min-w-[32px] font-mono">
               {params.transpose >= 0 ? `+${params.transpose}` : params.transpose} st
             </span>
             <button
               onClick={() => setParams((p) => ({ ...p, transpose: 0 }))}
-              className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-400 rounded-md text-[10px]"
+              className="hardware-button px-1.5 py-0.5 text-neutral-400 hover:text-white rounded text-[9px] font-mono uppercase"
               title="Reset Transpose to 0"
             >
               0
             </button>
           </div>
 
-          <div className="w-px h-5 bg-slate-800" />
-
-          {/* Harmonise Buttons: +- Thirds, +- Fifths, +- Octaves */}
-          <div className="flex items-center gap-1.5 bg-[#202433] px-2.5 py-1 rounded-xl border border-slate-700/60 shadow-sm">
-            <span className="text-[10px] font-mono uppercase text-slate-400 font-semibold mr-1" title="Generate musical harmony voices conforming to the active scale">
-              Harmonise:
-            </span>
+          {/* Stamped Socket: Diatonic Harmonise */}
+          <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+            <span className="silkscreen-label text-neutral-500 mr-0.5">HARMONISE:</span>
             <div className="flex items-center gap-1">
               <button
                 onClick={() => applyHarmonize('+3rd')}
-                className="px-2 py-0.5 text-[10px] font-mono font-bold bg-indigo-500/15 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 rounded-lg transition"
+                className="hardware-button px-1.5 py-0.5 text-[9.5px] font-mono font-bold text-amber-300 rounded transition"
                 title="Add diatonic +3rd harmony voice (above)"
               >
                 +3rd
               </button>
               <button
                 onClick={() => applyHarmonize('-3rd')}
-                className="px-2 py-0.5 text-[10px] font-mono font-bold bg-indigo-500/15 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 rounded-lg transition"
+                className="hardware-button px-1.5 py-0.5 text-[9.5px] font-mono font-bold text-amber-300 rounded transition"
                 title="Add diatonic -3rd harmony voice (below)"
               >
                 -3rd
               </button>
               <button
                 onClick={() => applyHarmonize('+5th')}
-                className="px-2 py-0.5 text-[10px] font-mono font-bold bg-sky-500/15 hover:bg-sky-500/30 text-sky-300 border border-sky-500/30 rounded-lg transition"
+                className="hardware-button px-1.5 py-0.5 text-[9.5px] font-mono font-bold text-emerald-300 rounded transition"
                 title="Add diatonic +5th harmony voice (above)"
               >
                 +5th
               </button>
               <button
                 onClick={() => applyHarmonize('-5th')}
-                className="px-2 py-0.5 text-[10px] font-mono font-bold bg-sky-500/15 hover:bg-sky-500/30 text-sky-300 border border-sky-500/30 rounded-lg transition"
+                className="hardware-button px-1.5 py-0.5 text-[9.5px] font-mono font-bold text-emerald-300 rounded transition"
                 title="Add diatonic -5th harmony voice (below)"
               >
                 -5th
               </button>
               <button
                 onClick={() => applyHarmonize('+12')}
-                className="px-2 py-0.5 text-[10px] font-mono font-bold bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 rounded-lg transition"
+                className="hardware-button px-1.5 py-0.5 text-[9.5px] font-mono font-bold text-amber-400 rounded transition"
                 title="Add +12 semitones (+1 Octave) harmony voice"
               >
                 +12
               </button>
               <button
                 onClick={() => applyHarmonize('-12')}
-                className="px-2 py-0.5 text-[10px] font-mono font-bold bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 rounded-lg transition"
+                className="hardware-button px-1.5 py-0.5 text-[9.5px] font-mono font-bold text-amber-400 rounded transition"
                 title="Add -12 semitones (-1 Octave) bass harmony voice"
               >
                 -12
@@ -1973,23 +1998,18 @@ export const PluginSimulator: React.FC = () => {
             </div>
           </div>
 
-          <div className="w-px h-5 bg-slate-800" />
-
-          {/* Speed Multiplier Controls */}
-          <div className="flex items-center gap-2">
-            <span className="text-slate-400 font-semibold text-[11px]">Speed:</span>
-            <span className="font-bold text-amber-400 min-w-[36px]">
-              {params.speedMultiplier.toFixed(2)}x
-            </span>
-            <div className="flex gap-1">
+          {/* Stamped Socket: Speed Multiplier */}
+          <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+            <span className="silkscreen-label text-neutral-500">SPEED:</span>
+            <div className="flex gap-0.5">
               {[0.5, 1.0, 2.0].map((rate) => (
                 <button
                   key={rate}
                   onClick={() => setParams((p) => ({ ...p, speedMultiplier: rate }))}
-                  className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition ${
+                  className={`px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold transition ${
                     params.speedMultiplier === rate
-                      ? 'bg-amber-500 text-slate-950'
-                      : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                      ? 'bg-[#d97706] text-black font-extrabold shadow-[0_0_8px_rgba(217,119,6,0.8)]'
+                      : 'hardware-button text-neutral-400 hover:text-white'
                   }`}
                 >
                   {rate}x
@@ -1998,111 +2018,81 @@ export const PluginSimulator: React.FC = () => {
             </div>
           </div>
 
-          <div className="w-px h-4 bg-slate-800" />
-
-          {/* Sync Mode Toggle */}
-          <div className="flex items-center gap-1.5 bg-[#202433] px-2.5 py-1 rounded-xl border border-slate-700/60">
-            <Gauge className="w-3.5 h-3.5 text-slate-400" />
+          {/* Stamped Socket: Sync Mode */}
+          <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+            <Gauge className="w-3.5 h-3.5 text-neutral-400" />
             <select
               value={params.syncMode}
               onChange={(e) => setParams((p) => ({ ...p, syncMode: e.target.value as 'daw' | 'audition' }))}
-              className="bg-transparent text-[11px] font-mono text-slate-300 focus:outline-none cursor-pointer"
+              className="bg-transparent text-[10.5px] font-mono font-bold text-amber-400 focus:outline-none cursor-pointer uppercase"
             >
-              <option value="daw" className="bg-[#1b1e2a]">Follow DAW</option>
-              <option value="audition" className="bg-[#1b1e2a]">Free Audition</option>
+              <option value="daw" className="bg-[#121418]">Follow DAW</option>
+              <option value="audition" className="bg-[#121418]">Free Audition</option>
             </select>
           </div>
 
-          {/* Dedicated Manual Tempo Controls when not synced to DAW */}
-          {params.syncMode === 'audition' ? (
-            <div className="flex items-center gap-1.5 bg-[#202433] px-2.5 py-1 rounded-xl border border-amber-500/40 shadow-sm animate-in fade-in duration-150">
-              <span className="text-[10px] font-mono uppercase text-amber-400 font-bold flex items-center gap-1">
-                BPM:
+          {/* Bottom-Right Flush Allen Rack Screw */}
+          <svg className="w-3.5 h-3.5 text-neutral-600 opacity-60 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+            <circle cx="12" cy="12" r="10" stroke="#333" strokeWidth="1.5" fill="#18191c"/>
+            <polygon points="12,7 16.33,9.5 16.33,14.5 12,17 7.67,14.5 7.67,9.5" fill="#0d0e10" stroke="#2a2c30" strokeWidth="1"/>
+          </svg>
+        </div>
+      </div>
+
+      {/* 3. Arpeggiator Control Module Rack Bay (Collapsible with smooth grid transition) */}
+      <div
+        className={`grid transition-all duration-300 ease-in-out bg-[#121417] ${
+          showArpPanel
+            ? 'grid-rows-[1fr] opacity-100 py-2.5 border-t-2 border-b-2 border-black/90 shadow-[inset_0_3px_8px_rgba(0,0,0,0.9)]'
+            : 'grid-rows-[0fr] opacity-0 py-0 border-t-0 border-b-0 pointer-events-none'
+        }`}
+      >
+        <div className="overflow-hidden">
+          <div className="px-3">
+            {/* Rack Bay Header Badge */}
+            <div className="flex items-center justify-between px-3 py-1 bg-[#0c0e10] border border-neutral-800 rounded-t text-[10px] font-mono mb-1.5">
+              <span className="silkscreen-label text-amber-500 font-bold flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shadow-[0_0_6px_rgba(245,158,11,0.8)]" />
+                RACK BAY 01 // ANALOG ARPEGGIATOR ENGINE
               </span>
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={() => handleTempoChange(sequence.bpm - 1)}
-                  className="w-5 h-5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center justify-center text-xs transition active:scale-95"
-                  title="Decrease tempo by 1 BPM (Shift-click for -5)"
-                  onMouseDown={(e) => {
-                    if (e.shiftKey) handleTempoChange(sequence.bpm - 5);
-                  }}
-                >
-                  <Minus className="w-3 h-3" />
-                </button>
-
-                <input
-                  type="number"
-                  min={20}
-                  max={320}
-                  value={tempoInputValue}
-                  onChange={(e) => {
-                    setTempoInputValue(e.target.value);
-                    const val = parseInt(e.target.value, 10);
-                    if (!isNaN(val) && val >= 20 && val <= 320) {
-                      handleTempoChange(val);
-                    }
-                  }}
-                  onBlur={() => {
-                    const val = parseInt(tempoInputValue, 10);
-                    if (isNaN(val) || val < 20 || val > 320) {
-                      setTempoInputValue(String(sequence.bpm));
-                    } else {
-                      handleTempoChange(val);
-                    }
-                  }}
-                  className="w-12 bg-[#10121a] border border-slate-700/80 rounded px-1 py-0.5 text-center font-mono font-bold text-amber-400 text-xs focus:border-amber-400 focus:outline-none"
-                  title="Manual tempo (20 - 320 BPM)"
-                />
-
-                <button
-                  onClick={() => handleTempoChange(sequence.bpm + 1)}
-                  className="w-5 h-5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center justify-center text-xs transition active:scale-95"
-                  title="Increase tempo by 1 BPM (Shift-click for +5)"
-                  onMouseDown={(e) => {
-                    if (e.shiftKey) handleTempoChange(sequence.bpm + 5);
-                  }}
-                >
-                  <Plus className="w-3 h-3" />
-                </button>
-
-                {/* Tap Tempo Button */}
-                <button
-                  onClick={handleTapTempo}
-                  className={`px-2 py-0.5 rounded-md text-[10px] font-bold font-mono transition ml-0.5 ${
-                    isTapActive
-                      ? 'bg-amber-400 text-slate-950 scale-105 shadow'
-                      : 'bg-slate-800 hover:bg-slate-700 text-amber-300'
-                  }`}
-                  title="Tap Tempo: Click repeatedly in rhythm to detect tempo"
-                >
-                  TAP
-                </button>
-
-                {/* Quick Tempo Shortcuts */}
-                <div className="hidden sm:flex items-center gap-0.5 ml-1 border-l border-slate-700/60 pl-1.5">
-                  {[80, 100, 120, 140, 160].map((t) => (
-                    <button
-                      key={t}
-                      onClick={() => handleTempoChange(t)}
-                      className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold transition ${
-                        sequence.bpm === t
-                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                          : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                      }`}
-                    >
-                      {t}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <span className="text-[9px] text-neutral-500 hidden sm:inline">ANALOG ARP GENERATOR</span>
             </div>
-          ) : (
-            <div className="flex items-center gap-1.5 bg-[#202433] px-2.5 py-1 rounded-xl border border-slate-700/60 text-[11px] font-mono text-slate-400" title="Tempo is locked to DAW host timeline">
-              <Lock className="w-3 h-3 text-slate-500" />
-              <span>DAW Host: <strong className="text-amber-400">{sequence.bpm} BPM</strong></span>
+            <ArpeggiatorControls
+              params={params}
+              onParamsChange={setParams}
+              onApplyArpToSequence={handleApplyArpToSequence}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* 4. Real-time Key & Chord Detector CRT Scope Rack Bay (Collapsible at bottom) */}
+      <div
+        className={`grid transition-all duration-300 ease-in-out bg-[#121417] ${
+          showChordVisualizer
+            ? 'grid-rows-[1fr] opacity-100 py-2.5 border-t-2 border-b-2 border-black/90 shadow-[inset_0_3px_8px_rgba(0,0,0,0.9)]'
+            : 'grid-rows-[0fr] opacity-0 py-0 border-t-0 border-b-0 pointer-events-none'
+        }`}
+      >
+        <div className="overflow-hidden">
+          <div className="px-3">
+            {/* Rack Bay Header Badge */}
+            <div className="flex items-center justify-between px-3 py-1 bg-[#0c0e10] border border-neutral-800 rounded-t text-[10px] font-mono mb-1.5">
+              <span className="silkscreen-label text-emerald-400 font-bold flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_6px_rgba(16,185,129,0.8)]" />
+                RACK BAY 02 // KEY & CHORD DETECTOR CRT SCOPE
+              </span>
+              <span className="text-[9px] text-neutral-500 hidden sm:inline">KRUMHANSL-SCHMUCKLER PROFILE</span>
             </div>
-          )}
+            <ChordVisualizer
+              activePitches={activePitches}
+              sequenceNotes={sequence.notes}
+              playheadPpq={playheadPpq}
+              selectedNoteIds={selectedNoteIds}
+              scaleRoot={params.scaleRoot}
+              scaleType={params.scaleType}
+            />
+          </div>
         </div>
       </div>
 

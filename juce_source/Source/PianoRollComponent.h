@@ -61,10 +61,31 @@ public:
     std::function<void(const std::vector<PlaybackEvent>& modifiedEvents)> onSequenceEdited;
     std::function<void(double newTotalPpq)> onLengthChanged;
 
+    // Velocity & Selection Public Methods
+    void selectAllNotes();
+    void deselectAllNotes();
+    float getSelectedAverageVelocity() const;
+    void setSelectedVelocity(float newVel);
+    std::vector<int> getCurrentlyAuditioningPitches() const;
+
+    // Cut / Copy / Paste Operations
+    struct ClipboardNote
+    {
+        int pitch;
+        double offsetPpq;
+        double durationPpq;
+        float velocity;
+        int channel;
+    };
+    void copySelectedNotes();
+    void cutSelectedNotes();
+    void pasteNotesAt(double targetPpq, int targetPitch = -1);
+
 private:
     std::shared_ptr<const SequenceSnapshot> currentSnapshot { nullptr };
     std::vector<PlaybackEvent> editableEvents;
     std::set<int> selectedNoteIds;
+    std::vector<ClipboardNote> noteClipboard;
 
     double playheadPpq { 0.0 };
     int previewTranspose { 0 };
@@ -81,8 +102,10 @@ private:
     float noteHeightPixels { 14.0f };
     int minPitch { 24 }; // C1
     int maxPitch { 96 }; // C7
+
     int rulerHeight { 30 };
     int pianoKeysWidth { 46 };
+    int velocityBarHeight { 28 };
 
     // Drag tracking
     enum class DragMode
@@ -92,7 +115,8 @@ private:
         MoveNotes,
         ResizeNoteEnd,
         MarqueeSelect,
-        DragLengthHandle
+        DragLengthHandle,
+        DragVelocitySlider
     };
 
     DragMode currentDragMode { DragMode::None };
@@ -101,6 +125,8 @@ private:
     double dragInitialPpq { 0.0 };
     int dragInitialPitch { 0 };
     double dragInitialTotalLength { 16.0 };
+    float dragInitialAvgVelocity { 0.75f };
+    std::vector<std::pair<int, float>> dragInitialNoteVelocities;
     juce::Rectangle<int> marqueeRect;
 
     // Helpers
@@ -115,6 +141,7 @@ private:
     void drawNotes(juce::Graphics& g, juce::Rectangle<int> area);
     void drawPlayhead(juce::Graphics& g, juce::Rectangle<int> area);
     void drawRuler(juce::Graphics& g, juce::Rectangle<int> area);
+    void drawVelocityHeatmap(juce::Graphics& g, juce::Rectangle<int> area);
 
     void notifySequenceChanged();
 
