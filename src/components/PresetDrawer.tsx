@@ -3,6 +3,7 @@ import {
   MidiLensPreset,
   PresetSettings,
   FACTORY_PRESETS,
+  PRESET_PACKS,
   loadUserPresets,
   saveUserPresets,
   loadFavoriteIds,
@@ -28,6 +29,7 @@ import {
   Unlock,
   Radio,
   Bookmark,
+  Layers,
 } from 'lucide-react';
 
 interface PresetDrawerProps {
@@ -51,6 +53,7 @@ export const PresetDrawer: React.FC<PresetDrawerProps> = ({
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
 
   const [activeTab, setActiveTab] = useState<'All' | 'Factory' | 'User' | 'Favorites'>('All');
+  const [activePack, setActivePack] = useState<string>('All Packs');
   const [searchQuery, setSearchQuery] = useState('');
 
   // Save Modal State
@@ -159,10 +162,14 @@ export const PresetDrawer: React.FC<PresetDrawerProps> = ({
     if (activeTab === 'User' && p.isFactory) return false;
     if (activeTab === 'Favorites' && !favoriteIds.has(p.id)) return false;
 
+    const presetPack = p.pack || (p.isFactory ? 'Core Factory' : 'User Presets');
+    if (activePack !== 'All Packs' && presetPack !== activePack) return false;
+
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       return (
         p.name.toLowerCase().includes(q) ||
+        presetPack.toLowerCase().includes(q) ||
         p.category.toLowerCase().includes(q) ||
         p.description.toLowerCase().includes(q) ||
         p.settings.scaleType.toLowerCase().includes(q)
@@ -171,9 +178,11 @@ export const PresetDrawer: React.FC<PresetDrawerProps> = ({
     return true;
   });
 
+  const activePackInfo = PRESET_PACKS.find((pk) => pk.name === activePack);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4 animate-in fade-in duration-200">
-      <div className="w-full max-w-3xl bg-[#1b1e2a] border border-slate-700/80 rounded-2xl overflow-hidden shadow-2xl flex flex-col max-h-[85vh] text-slate-100 font-sans">
+      <div className="w-full max-w-4xl bg-[#1b1e2a] border border-slate-700/80 rounded-2xl overflow-hidden shadow-2xl flex flex-col max-h-[86vh] text-slate-100 font-sans">
         {/* Toast Alert */}
         {toastMessage && (
           <div className="absolute top-4 right-4 z-50 bg-sky-500 text-slate-950 font-bold font-mono text-xs px-3 py-2 rounded-xl shadow-lg animate-in slide-in-from-top duration-150 flex items-center gap-2">
@@ -190,10 +199,10 @@ export const PresetDrawer: React.FC<PresetDrawerProps> = ({
             </div>
             <div>
               <h3 className="font-bold text-sm text-white font-mono uppercase tracking-wider">
-                MidiLens Preset Manager
+                MidiLens Preset Packs &amp; Manager
               </h3>
               <p className="text-xs text-slate-400">
-                Save & load scales, quantization strength, timing swing, and humanize parameters
+                {FACTORY_PRESETS.length} Factory Grooves across {PRESET_PACKS.length} Genre Packs &bull; Scales, grid &amp; humanise settings
               </p>
             </div>
           </div>
@@ -256,11 +265,65 @@ export const PresetDrawer: React.FC<PresetDrawerProps> = ({
           </div>
         </div>
 
+        {/* Preset Packs Selector Strip */}
+        <div className="px-6 py-2.5 bg-[#131620] border-b border-slate-800/90 flex flex-col gap-1.5">
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar">
+            <span className="flex items-center gap-1 text-[10px] font-mono uppercase tracking-wider text-slate-500 shrink-0 mr-1">
+              <Layers className="w-3 h-3 text-amber-400" />
+              Packs:
+            </span>
+            <button
+              onClick={() => setActivePack('All Packs')}
+              className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold shrink-0 border transition ${
+                activePack === 'All Packs'
+                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                  : 'bg-[#0f1118] text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700'
+              }`}
+            >
+              All Packs ({allPresets.length})
+            </button>
+            {PRESET_PACKS.map((pk) => {
+              const count = allPresets.filter((p) => p.pack === pk.name).length;
+              const isSelected = activePack === pk.name;
+              return (
+                <button
+                  key={pk.name}
+                  onClick={() => setActivePack(pk.name)}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-semibold shrink-0 border transition ${
+                    isSelected
+                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                      : 'bg-[#0f1118] text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700'
+                  }`}
+                >
+                  {pk.name} <span className="text-slate-500">({count})</span>
+                </button>
+              );
+            })}
+            {userPresets.length > 0 && (
+              <button
+                onClick={() => setActivePack('User Presets')}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-semibold shrink-0 border transition ${
+                  activePack === 'User Presets'
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                    : 'bg-[#0f1118] text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700'
+                }`}
+              >
+                User Presets ({userPresets.length})
+              </button>
+            )}
+          </div>
+          {activePackInfo && (
+            <p className="text-[11px] font-mono text-amber-300/80 pl-1">
+              {activePackInfo.name}: <span className="text-slate-400">{activePackInfo.description}</span>
+            </p>
+          )}
+        </div>
+
         {/* Presets List Grid */}
         <div className="flex-1 overflow-y-auto p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
           {filteredPresets.length === 0 ? (
             <div className="col-span-2 p-12 text-center text-xs font-mono text-slate-500">
-              No presets matching "{searchQuery}"
+              No presets matching current filters{searchQuery ? ` ("${searchQuery}")` : ''}
             </div>
           ) : (
             filteredPresets.map((preset) => {
@@ -284,10 +347,15 @@ export const PresetDrawer: React.FC<PresetDrawerProps> = ({
                 >
                   <div className="flex items-start justify-between gap-2 mb-2">
                     <div>
-                      <div className="flex items-center gap-2 mb-1">
+                      <div className="flex items-center flex-wrap gap-1.5 mb-1">
                         <span className="font-bold text-sm text-slate-100 font-mono group-hover:text-sky-300 transition">
                           {preset.name}
                         </span>
+                        {preset.pack && (
+                          <span className="text-[9px] font-mono font-semibold bg-amber-500/10 text-amber-300/90 border border-amber-500/20 px-1.5 py-0.5 rounded">
+                            {preset.pack}
+                          </span>
+                        )}
                         {isActive && (
                           <span className="text-[9px] font-mono font-bold bg-sky-500 text-slate-950 px-1.5 py-0.5 rounded">
                             ACTIVE

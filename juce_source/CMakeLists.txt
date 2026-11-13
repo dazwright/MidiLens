@@ -66,7 +66,6 @@ target_sources(MidiPreviewer
         Source/LockFreeMidiFifo.h
         Source/MidiFileExporter.h
         Source/MidiFileExporter.cpp
-        Source/ChordDetector.h
         Source/ArpEngine.h
         Source/MidiLensLookAndFeel.h
 )

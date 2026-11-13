@@ -17,7 +17,6 @@ import readmeMd from '../juce_source/README.md?raw';
 import githubWorkflowYml from '../juce_source/.github/workflows/build.yml?raw';
 import installLocalAuSh from '../juce_source/install_local_au.sh?raw';
 import installAuCommand from '../juce_source/install_au.command?raw';
-import chordDetectorH from '../juce_source/Source/ChordDetector.h?raw';
 import arpEngineH from '../juce_source/Source/ArpEngine.h?raw';
 import midiLensLookAndFeelH from '../juce_source/Source/MidiLensLookAndFeel.h?raw';
 
@@ -65,7 +64,7 @@ export const JUCE_CODE_FILES: CodeFileEntry[] = [
     path: 'WebUI/app.js',
     language: 'javascript',
     category: 'GUI Canvas',
-    description: 'Self-contained production bundle of the full MidiLens React UI (Library Organiser, Preset Drawer, Piano Roll, Arp & Chord Visualiser).',
+    description: 'Self-contained production bundle of the full MidiLens React UI (Library Organiser, Preset Drawer, Piano Roll & Arp).',
     content: webUiAppJs,
   },
   {
@@ -155,14 +154,6 @@ export const JUCE_CODE_FILES: CodeFileEntry[] = [
     category: 'Analysis DSP',
     description: 'Krumhansl-Schmuckler algorithm implementation with velocity/duration weighted accumulation.',
     content: keyDetectorCpp,
-  },
-  {
-    filename: 'ChordDetector.h',
-    path: 'Source/ChordDetector.h',
-    language: 'cpp',
-    category: 'Analysis DSP',
-    description: 'Header for real-time chord detection engine matching the interactive visualiser in the plugin.',
-    content: chordDetectorH,
   },
   {
     filename: 'PianoRollComponent.h',

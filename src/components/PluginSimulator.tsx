@@ -17,11 +17,11 @@ import {
   MidiLensPreset,
   PresetSettings,
   FACTORY_PRESETS,
+  PRESET_PACKS,
 } from '../presetManager';
 import { synthAudioEngine } from '../audioEngine';
 import { PianoRoll } from './PianoRoll';
 import { PresetDrawer } from './PresetDrawer';
-import { ChordVisualizer } from './ChordVisualizer';
 import { ArpeggiatorControls } from './ArpeggiatorControls';
 import { MidiExportModal } from './MidiExportModal';
 import { arpeggiateNotes } from '../arpUtils';
@@ -67,7 +67,6 @@ import {
   Minus,
   Plus,
   CheckSquare,
-  Activity,
 } from 'lucide-react';
 
 interface HistorySnapshot {
@@ -112,10 +111,8 @@ export const PluginSimulator: React.FC = () => {
   });
 
   const [selectedNoteIds, setSelectedNoteIds] = useState<Set<number>>(new Set());
-  const [activePitches, setActivePitches] = useState<number[]>([]);
 
   // Panel & Modal visibility toggles
-  const [showChordVisualizer, setShowChordVisualizer] = useState(false);
   const [showArpPanel, setShowArpPanel] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
 
@@ -351,9 +348,6 @@ export const PluginSimulator: React.FC = () => {
     synthAudioEngine.setOnStateChange((playing) => {
       setIsPlaying(playing);
     });
-    synthAudioEngine.setOnActivePitches((pitches) => {
-      setActivePitches(pitches);
-    });
   }, []);
 
   // Native JUCE 8 WebView Event Listeners (DAW Telemetry, Finder Folder Scan, File Load & State Recall)
@@ -367,9 +361,6 @@ export const PluginSimulator: React.FC = () => {
       }
       if (typeof payload.isPlaying === 'boolean') {
         setIsPlaying(payload.isPlaying);
-      }
-      if (Array.isArray(payload.activePitches)) {
-        setActivePitches(payload.activePitches);
       }
       if (payload.hostKeyDetected && typeof payload.hostKeyRoot === 'number') {
         const nextScale: ScaleType = payload.hostKeyIsMinor ? 'minor' : 'major';
@@ -1533,13 +1524,21 @@ export const PluginSimulator: React.FC = () => {
                     </optgroup>
                   ))}
 
-                <optgroup label="🎵 Factory Grooves & Patterns">
-                  {PRESET_SEQUENCES.map((p, idx) => (
-                    <option key={`preset_${idx}`} value={`preset_${idx}`} className="bg-[#121418] text-neutral-200">
-                      {p.name}
-                    </option>
-                  ))}
-                </optgroup>
+                {PRESET_PACKS.map((pack) => {
+                  const packItems = PRESET_SEQUENCES.map((p, idx) => ({ p, idx })).filter(
+                    ({ p }) => p.pack === pack.name
+                  );
+                  if (packItems.length === 0) return null;
+                  return (
+                    <optgroup key={pack.name} label={`📦 ${pack.name} (${packItems.length})`}>
+                      {packItems.map(({ p, idx }) => (
+                        <option key={`preset_${idx}`} value={`preset_${idx}`} className="bg-[#121418] text-neutral-200">
+                          {p.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
               </select>
             </div>
 
@@ -2073,22 +2072,6 @@ export const PluginSimulator: React.FC = () => {
               ARP
             </span>
           </button>
-
-          {/* Mechanical Rocker Switch: CHORD VISUALISER MODULE */}
-          <button
-            onClick={() => setShowChordVisualizer(!showChordVisualizer)}
-            className={`flex items-center gap-2 px-3 py-1 text-xs font-mono font-bold rounded transition border shadow-md ${
-              showChordVisualizer
-                ? 'bg-gradient-to-b from-emerald-500 to-emerald-700 text-black font-extrabold border-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.7)]'
-                : 'bg-[#121418] text-emerald-400 border-emerald-500/50 hover:border-emerald-400 hover:bg-neutral-900'
-            }`}
-            title="Click to toggle Chord Analysis & Visualiser panel"
-          >
-            <Activity className={`w-3.5 h-3.5 ${showChordVisualizer ? 'text-black' : 'text-emerald-400'}`} />
-            <span className="uppercase text-[10.5px] tracking-widest font-black">
-              VISUALISER
-            </span>
-          </button>
         </div>
       </div>
 
@@ -2437,36 +2420,6 @@ export const PluginSimulator: React.FC = () => {
               params={params}
               onParamsChange={setParams}
               onApplyArpToSequence={handleApplyArpToSequence}
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* 4. Real-time Key & Chord Detector CRT Scope Rack Bay (Collapsible at bottom) */}
-      <div
-        className={`grid transition-all duration-300 ease-in-out bg-[#121417] ${
-          showChordVisualizer
-            ? 'grid-rows-[1fr] opacity-100 py-2.5 border-t-2 border-b-2 border-black/90 shadow-[inset_0_3px_8px_rgba(0,0,0,0.9)]'
-            : 'grid-rows-[0fr] opacity-0 py-0 border-t-0 border-b-0 pointer-events-none'
-        }`}
-      >
-        <div className="overflow-hidden">
-          <div className="px-3">
-            {/* Rack Bay Header Badge */}
-            <div className="flex items-center justify-between px-3 py-1 bg-[#0c0e10] border border-neutral-800 rounded-t text-[10px] font-mono mb-1.5">
-              <span className="silkscreen-label text-emerald-400 font-bold flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_6px_rgba(16,185,129,0.8)]" />
-                RACK BAY 02 // KEY & CHORD DETECTOR CRT SCOPE
-              </span>
-              <span className="text-[9px] text-neutral-500 hidden sm:inline">KRUMHANSL-SCHMUCKLER PROFILE</span>
-            </div>
-            <ChordVisualizer
-              activePitches={activePitches}
-              sequenceNotes={sequence.notes}
-              playheadPpq={playheadPpq}
-              selectedNoteIds={selectedNoteIds}
-              scaleRoot={params.scaleRoot}
-              scaleType={params.scaleType}
             />
           </div>
         </div>

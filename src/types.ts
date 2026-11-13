@@ -29,6 +29,7 @@ export interface MidiNote {
 
 export interface MidiSequence {
   name: string;
+  pack?: string;
   bpm: number;
   timeSigNumerator: number;
   timeSigDenominator: number;
