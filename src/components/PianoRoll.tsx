@@ -365,7 +365,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
 
         if (noteHeight >= 10 && sharpNames[semitone]) {
           ctx.fillStyle = inScale ? '#e2e8f0' : '#94a3b8';
-          ctx.font = 'bold 8px "JetBrains Mono", monospace';
+          ctx.font = 'bold 8px "SF Mono", "JetBrains Mono", Menlo, Monaco, ui-monospace, monospace';
           ctx.textAlign = 'left';
           ctx.textBaseline = 'middle';
           ctx.fillText(sharpNames[semitone], 4, y + noteHeight / 2);
@@ -390,13 +390,13 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         if (semitone === 0) {
           const octave = Math.floor(p / 12) - 1;
           ctx.fillStyle = '#0f172a';
-          ctx.font = 'bold 9.5px "JetBrains Mono", monospace';
+          ctx.font = 'bold 9.5px "SF Mono", "JetBrains Mono", Menlo, Monaco, ui-monospace, monospace';
           ctx.textAlign = 'right';
           ctx.textBaseline = 'middle';
           ctx.fillText(`C${octave}`, pianoKeysWidth - 10, y + noteHeight / 2);
         } else if (noteHeight >= 13) {
           ctx.fillStyle = inScale ? '#475569' : '#64748b';
-          ctx.font = '600 8px "JetBrains Mono", monospace';
+          ctx.font = '600 8px "SF Mono", "JetBrains Mono", Menlo, Monaco, ui-monospace, monospace';
           ctx.textAlign = 'right';
           ctx.textBaseline = 'middle';
           ctx.fillText(getNoteName(semitone), pianoKeysWidth - 10, y + noteHeight / 2);
@@ -517,105 +517,155 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     ctx.textAlign = 'center';
     ctx.fillText('END', lengthX, 19);
 
-    // Draw Notes with Phosphor CRT Glow (Flat rectangular phosphor green/vintage amber traces)
+    // Draw Notes with Velocity Heatmap Colors (Green -> Yellow/Amber -> Vivid Red) & Crisp Selection/Lock Framing
+    const monoFontFamily = '"SF Mono", "JetBrains Mono", Menlo, Monaco, ui-monospace, monospace';
     for (const note of notes) {
       const effectivePitch = Math.min(127, Math.max(0, note.pitch + previewTranspose));
       const inScale = scaleType === 'chromatic' ? true : isPitchInScale(effectivePitch, scaleRoot, scaleType);
       const x = ppqToX(note.startPpq);
       const w = Math.max(6, note.durationPpq * pixelsPerPpq);
       const y = pitchToY(effectivePitch);
+      const boxH = Math.max(3, noteHeight - 1.5);
+      const boxY = y + 0.75;
       const isSelected = selectedNoteIds.has(note.id);
       const isLocked = Boolean(note.locked);
+      const velColor = getVelocityColor(note.velocity);
 
       ctx.save();
       if (isSelected) {
-        ctx.shadowColor = isLocked ? '#38bdf8' : '#f59e0b';
-        ctx.shadowBlur = 10;
-        ctx.fillStyle = isLocked ? '#38bdf8' : '#fbbf24';
+        ctx.shadowColor = isLocked ? 'rgba(56, 189, 248, 0.85)' : 'rgba(255, 255, 255, 0.75)';
+        ctx.shadowBlur = 8;
       } else if (isLocked) {
-        ctx.shadowColor = '#0ea5e9';
-        ctx.shadowBlur = 8;
-        ctx.fillStyle = inScale ? '#0284c7' : '#1e3a5f';
+        ctx.shadowColor = 'rgba(14, 165, 233, 0.65)';
+        ctx.shadowBlur = 6;
       } else if (inScale) {
-        ctx.shadowColor = '#10b981';
-        ctx.shadowBlur = 8;
-        ctx.fillStyle = note.velocity > 0.8 ? '#34d399' : '#10b981';
-      } else {
-        ctx.fillStyle = '#334155';
+        ctx.shadowColor = velColor.base;
+        ctx.shadowBlur = 4;
       }
 
-      // Clean flat rectangular geometry instead of bubbly pills
-      ctx.beginPath();
-      ctx.roundRect(x, y + 1, w, noteHeight - 2, 1.5);
-      ctx.fill();
+      if (inScale) {
+        ctx.fillStyle = velColor.base;
+        ctx.beginPath();
+        ctx.roundRect(x, boxY, w, boxH, 1.5);
+        ctx.fill();
+      } else {
+        // Out-of-scale: dark slate base with subtle velocity tint so velocity edits still show while staying clearly muted
+        ctx.fillStyle = '#1e293b';
+        ctx.beginPath();
+        ctx.roundRect(x, boxY, w, boxH, 1.5);
+        ctx.fill();
+        ctx.globalAlpha = isSelected ? 0.55 : 0.35;
+        ctx.fillStyle = velColor.base;
+        ctx.beginPath();
+        ctx.roundRect(x, boxY, w, boxH, 1.5);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
       ctx.restore();
 
-      // Subtle top highlight sheen
-      ctx.fillStyle = isSelected ? '#fef3c7' : isLocked ? '#bae6fd' : inScale ? '#6ee7b7' : '#64748b';
-      ctx.fillRect(x + 1, y + 1.5, Math.max(1, w - 2), 1.0);
+      // Top highlight sheen
+      ctx.fillStyle = isSelected
+        ? 'rgba(255, 255, 255, 0.65)'
+        : isLocked
+          ? '#7dd3fc'
+          : inScale
+            ? velColor.highlight
+            : 'rgba(148, 163, 184, 0.3)';
+      ctx.fillRect(x + 1, boxY + 0.5, Math.max(1, w - 2), 1.0);
 
-      // Border: Clean phosphor green / amber / locked cyan border
-      ctx.strokeStyle = isSelected ? '#ffffff' : isLocked ? '#7dd3fc' : inScale ? '#059669' : '#1e293b';
-      ctx.lineWidth = isSelected || isLocked ? 1.5 : 1.0;
-      ctx.strokeRect(x, y + 1, w, noteHeight - 2);
+      // Selection / Lock / Velocity Border
+      if (isSelected) {
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.8;
+        ctx.strokeRect(x + 0.5, boxY + 0.5, Math.max(1, w - 1), Math.max(1, boxH - 1));
+        if (isLocked && w >= 6) {
+          ctx.strokeStyle = '#38bdf8';
+          ctx.lineWidth = 1.2;
+          ctx.strokeRect(x + 2, boxY + 2, Math.max(1, w - 4), Math.max(1, boxH - 4));
+        }
+      } else if (isLocked) {
+        ctx.strokeStyle = '#38bdf8';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x + 0.5, boxY + 0.5, Math.max(1, w - 1), Math.max(1, boxH - 1));
+      } else {
+        ctx.strokeStyle = inScale ? velColor.border : '#334155';
+        ctx.lineWidth = 1.0;
+        ctx.strokeRect(x, boxY, w, boxH);
+      }
+
+      // Left selection indicator accent bar
+      if (isSelected && w >= 10) {
+        ctx.fillStyle = isLocked ? '#38bdf8' : '#ffffff';
+        ctx.fillRect(x + 1, boxY + 1, 2, Math.max(1, boxH - 2));
+      }
 
       // Distinct Right-Edge Trim / Resize Handle (Tactile Hardware Grip)
-      if (w >= 10) {
-        const handleW = Math.min(6, Math.max(3, w * 0.18));
-        ctx.fillStyle = isSelected ? 'rgba(0, 0, 0, 0.45)' : 'rgba(0, 0, 0, 0.28)';
-        ctx.fillRect(x + w - handleW - 1, y + 2, handleW, noteHeight - 4);
-        // Bright vertical notch grip indicator
-        ctx.fillStyle = isSelected ? '#ffffff' : 'rgba(255, 255, 255, 0.65)';
-        ctx.fillRect(x + w - 2.5, y + 3, 1, noteHeight - 6);
+      if (w >= 12) {
+        const handleW = Math.min(5, Math.max(2.5, w * 0.14));
+        ctx.fillStyle = isSelected ? 'rgba(0, 0, 0, 0.35)' : 'rgba(0, 0, 0, 0.22)';
+        ctx.fillRect(x + w - handleW - 1, boxY + 1.5, handleW, Math.max(1, boxH - 3));
+        ctx.fillStyle = isSelected ? '#ffffff' : 'rgba(255, 255, 255, 0.55)';
+        ctx.fillRect(x + w - 2.5, boxY + 2, 1, Math.max(1, boxH - 4));
       }
 
       // Miniature padlock icon for locked notes
-      if (isLocked && w >= 12 && noteHeight >= 9) {
-        const lockX = x + 3;
+      const showPadlock = isLocked && w >= 12 && noteHeight >= 7;
+      if (showPadlock) {
+        const lockX = isSelected ? x + 4.5 : x + 3;
         const lockMidY = y + noteHeight / 2;
         ctx.save();
-        ctx.strokeStyle = isSelected ? '#0f172a' : '#e0f2fe';
-        ctx.fillStyle = isSelected ? '#0f172a' : '#e0f2fe';
+        const lockCol = velColor.isLight && inScale ? '#0c4a6e' : '#e0f2fe';
+        ctx.strokeStyle = lockCol;
+        ctx.fillStyle = lockCol;
         ctx.lineWidth = 1.1;
         ctx.beginPath();
-        ctx.arc(lockX + 3, lockMidY - 1.5, 2, Math.PI, 0);
+        ctx.arc(lockX + 2.5, lockMidY - 1.2, 1.8, Math.PI, 0);
         ctx.stroke();
-        ctx.fillRect(lockX + 0.5, lockMidY - 1.2, 5, 4);
+        ctx.fillRect(lockX + 0.5, lockMidY - 1, 4, 3.5);
         ctx.restore();
       }
 
-      // Out of scale warning icon/stripes on note if scaleLock is enabled
+      // Out of scale warning diagonal slash
       if (!inScale) {
-        ctx.strokeStyle = 'rgba(239, 68, 68, 0.7)';
+        ctx.strokeStyle = 'rgba(248, 113, 113, 0.85)';
         ctx.lineWidth = 1.2;
         ctx.beginPath();
-        ctx.moveTo(x + 2, y + noteHeight - 3);
-        ctx.lineTo(x + Math.min(w - 2, 12), y + 3);
+        ctx.moveTo(x + 2, boxY + boxH - 1.5);
+        ctx.lineTo(x + Math.min(w - 2, 10), boxY + 1.5);
         ctx.stroke();
       }
 
-      // Note Name Label rendered directly on the note block
-      if (w >= 12 && noteHeight >= 8) {
+      // Note Pitch Value Label rendered directly on the note block (works across web & compact AU plugin heights)
+      if (w >= 8 && noteHeight >= 4.5) {
         const pc = ((effectivePitch % 12) + 12) % 12;
         const octave = Math.floor(effectivePitch / 12) - 1;
         const useFlats = [1, 3, 5, 8, 10].includes(scaleRoot);
         const noteLetter = getNoteName(pc, useFlats);
-        const displayName = w >= 28 ? `${noteLetter}${octave}` : noteLetter;
-        const textOffsetX = isLocked ? x + 11 : x + 4;
+        const displayName = w >= 22 ? `${noteLetter}${octave}` : noteLetter;
+        const textOffsetX = x + (showPadlock ? 12 : isSelected ? 4.5 : 3);
 
-        if (!isLocked || w >= 20) {
-          const fontSize = Math.min(10, Math.max(7, Math.floor(noteHeight - 3)));
-          ctx.font = `bold ${fontSize}px "JetBrains Mono", monospace`;
+        if (!showPadlock || w >= 20) {
+          const fontSize = noteHeight < 8 ? Math.max(6.5, noteHeight - 0.5) : Math.min(10, Math.max(7, Math.floor(noteHeight - 2.5)));
+          ctx.save();
+          // Clip horizontally so text never overflows narrow notes, with small vertical headroom for small rows
+          ctx.beginPath();
+          ctx.rect(x + 1, y - 2, Math.max(0, w - 2.5), noteHeight + 4);
+          ctx.clip();
+
+          ctx.font = `700 ${fontSize}px ${monoFontFamily}`;
           ctx.textBaseline = 'middle';
           ctx.textAlign = 'left';
 
-          // Dark shadow for high contrast on light velocity colors
-          ctx.fillStyle = isSelected ? '#ffffff' : 'rgba(0, 0, 0, 0.85)';
-          ctx.fillText(displayName, textOffsetX, y + noteHeight / 2 + 1);
-
-          // Main text
-          ctx.fillStyle = isSelected ? '#0f172a' : isLocked ? '#f0f9ff' : '#042f2e';
-          ctx.fillText(displayName, textOffsetX - 0.5, y + noteHeight / 2);
+          const useDarkInk = inScale && velColor.isLight;
+          if (!useDarkInk) {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+            ctx.fillText(displayName, textOffsetX + 0.5, y + noteHeight / 2 + 0.6);
+            ctx.fillStyle = '#ffffff';
+          } else {
+            ctx.fillStyle = '#05080f';
+          }
+          ctx.fillText(displayName, textOffsetX, y + noteHeight / 2 + 0.25);
+          ctx.restore();
         }
       }
     }

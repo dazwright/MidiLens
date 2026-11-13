@@ -1057,7 +1057,22 @@ export const PluginSimulator: React.FC = () => {
   const avgMidiVelocity = Math.round(avgVelocity * 127);
   const linePercent = Math.min(100, Math.max(0, avgVelocity * 100));
 
-  // Apply new average velocity with proportionate scaling to all selected notes
+  const scaleVelocitySample = (origVel: number, initialAvg: number, targetAvg: number): number => {
+    const minVel = 0.01;
+    const maxVel = 1.0;
+    const v = Math.min(maxVel, Math.max(minVel, origVel));
+    const target = Math.min(maxVel, Math.max(minVel, targetAvg));
+    if (target >= initialAvg) {
+      const denom = maxVel - initialAvg;
+      const t = denom > 0.001 ? (target - initialAvg) / denom : 1.0;
+      return Math.min(maxVel, Math.max(minVel, v + (maxVel - v) * t));
+    }
+    const denom = initialAvg - minVel;
+    const t = denom > 0.001 ? (initialAvg - target) / denom : 1.0;
+    return Math.min(maxVel, Math.max(minVel, v - (v - minVel) * t));
+  };
+
+  // Apply new average velocity with endpoint-preserving scaling to all selected notes
   const applyVelocityToSelectedNotes = useCallback(
     (targetAvgVel: number, recordHistory = false) => {
       if (selectedNotes.length === 0) return;
@@ -1076,14 +1091,12 @@ export const PluginSimulator: React.FC = () => {
       } else {
         const currentAvg =
           selectedNotes.reduce((acc, n) => acc + n.velocity, 0) / selectedNotes.length;
-        const ratio = currentAvg > 0.001 ? clampedAvg / currentAvg : 1.0;
 
         setSequence((s) => ({
           ...s,
           notes: s.notes.map((n) => {
             if (selectedNoteIds.has(n.id)) {
-              const scaled = Math.min(1.0, Math.max(0.05, n.velocity * ratio));
-              return { ...n, velocity: scaled };
+              return { ...n, velocity: scaleVelocitySample(n.velocity, currentAvg, clampedAvg) };
             }
             return n;
           }),
@@ -1128,13 +1141,12 @@ export const PluginSimulator: React.FC = () => {
         notes: s.notes.map((n) => (n.id === targetId ? { ...n, velocity: clickRatio } : n)),
       }));
     } else {
-      const ratio = initialAvg > 0.001 ? clickRatio / initialAvg : 1.0;
       setSequence((s) => ({
         ...s,
         notes: s.notes.map((n) => {
           if (initialVelMap.has(n.id)) {
             const initV = initialVelMap.get(n.id)!;
-            return { ...n, velocity: Math.min(1.0, Math.max(0.05, initV * ratio)) };
+            return { ...n, velocity: scaleVelocitySample(initV, initialAvg, clickRatio) };
           }
           return n;
         }),
@@ -1160,13 +1172,12 @@ export const PluginSimulator: React.FC = () => {
           notes: s.notes.map((n) => (n.id === targetId ? { ...n, velocity: targetAvg } : n)),
         }));
       } else {
-        const ratio = initialAvg > 0.001 ? targetAvg / initialAvg : 1.0;
         setSequence((s) => ({
           ...s,
           notes: s.notes.map((n) => {
             if (initialVelMap.has(n.id)) {
               const initV = initialVelMap.get(n.id)!;
-              return { ...n, velocity: Math.min(1.0, Math.max(0.05, initV * ratio)) };
+              return { ...n, velocity: scaleVelocitySample(initV, initialAvg, targetAvg) };
             }
             return n;
           }),

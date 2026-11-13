@@ -223,7 +223,7 @@ export function quantizePpq(ppq: number, grid: QuantizeGrid): number {
  * Transitioning through yellow / amber (0.5)
  * To vivid red for highest velocity (0.9 - 1.0)
  */
-export function getVelocityColor(velocity: number): { base: string; border: string; highlight: string } {
+export function getVelocityColor(velocity: number): { base: string; border: string; highlight: string; isLight: boolean } {
   const v = Math.max(0.0, Math.min(1.0, velocity));
 
   let r = 0;
@@ -244,11 +244,12 @@ export function getVelocityColor(velocity: number): { base: string; border: stri
     b = Math.round(21 + t * (68 - 21));
   }
 
+  const brightness = r * 0.299 + g * 0.587 + b * 0.114;
   const base = `rgb(${r}, ${g}, ${b})`;
   const border = `rgb(${Math.max(0, r - 40)}, ${Math.max(0, g - 40)}, ${Math.max(0, b - 40)})`;
   const highlight = `rgba(255, 255, 255, 0.55)`;
 
-  return { base, border, highlight };
+  return { base, border, highlight, isLight: brightness > 155 };
 }
 
 /**
