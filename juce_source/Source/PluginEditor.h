@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_gui_extra/juce_gui_extra.h>
+#include <atomic>
 #include <memory>
 #include <optional>
 #include "PluginProcessor.h"
@@ -44,13 +45,18 @@ private:
     void handleNativeSaveMidi(const juce::var& rawPayload);
     void handleNativeDragMidiToDaw(const juce::var& rawPayload);
     void handleSaveUiState(const juce::var& rawPayload);
+    void handleClearScannedLibrary();
+    void handleRescanSavedFolders();
 
     void scanDirectoryAsync(const juce::File& directory);
     void scanDirectoriesAsync(const juce::Array<juce::File>& directories);
+    void refreshSavedFoldersAsync(const std::vector<juce::String>& folderPaths);
+    void streamLibraryToWebView(bool fromRescan = false);
     void loadAndEmitSingleFile(const juce::File& midiFile, const juce::String& sourceType, int index);
 
     MidiPreviewerAudioProcessor& audioProcessor;
     bool isFrontendReady { false };
+    std::shared_ptr<std::atomic<bool>> libraryStreamCancelFlag;
     std::shared_ptr<juce::FileChooser> activeFileChooser;
     std::unique_ptr<juce::WebBrowserComponent> webBrowser;
 

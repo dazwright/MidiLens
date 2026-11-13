@@ -26,6 +26,7 @@ import { ArpeggiatorControls } from './ArpeggiatorControls';
 import { MidiExportModal } from './MidiExportModal';
 import { arpeggiateNotes } from '../arpUtils';
 import { LibraryModal } from './LibraryModal';
+import { generateMusicalPattern, GeneratorPatternType } from '../midiGenerator';
 import {
   isJuceNative,
   emitToJuce,
@@ -67,6 +68,7 @@ import {
   Minus,
   Plus,
   CheckSquare,
+  GripVertical,
 } from 'lucide-react';
 
 interface HistorySnapshot {
@@ -92,7 +94,7 @@ export const PluginSimulator: React.FC = () => {
     speedMultiplier: FACTORY_PRESETS[0].settings.speedMultiplier,
     velocityScale: FACTORY_PRESETS[0].settings.velocityScale,
     velocityOffset: FACTORY_PRESETS[0].settings.velocityOffset,
-    syncMode: 'audition',
+    syncMode: 'daw',
     loop: true,
     targetKeyRoot: 0,
     targetKeyIsMinor: true,
@@ -121,9 +123,11 @@ export const PluginSimulator: React.FC = () => {
 
   // Folder scanning state (non-blocking chunked scan & streaming progress)
   const [scannedFiles, setScannedFiles] = useState<ScannedMidiFile[]>([]);
+  const [savedFolderPaths, setSavedFolderPaths] = useState<string[]>([]);
   const [showFolderModal, setShowFolderModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isScanning, setIsScanning] = useState(false);
+  const [isRescanning, setIsRescanning] = useState(false);
   const [scanProgress, setScanProgress] = useState({ scanned: 0, total: 0, found: 0 });
   const [currentScanningFolder, setCurrentScanningFolder] = useState('');
   const [visibleLibraryCount, setVisibleLibraryCount] = useState(50);
@@ -136,11 +140,22 @@ export const PluginSimulator: React.FC = () => {
   const [isWaitingFolderAuth, setIsWaitingFolderAuth] = useState(false);
   const [notificationBanner, setNotificationBanner] = useState<string | null>(null);
 
-  // Humanize panel state
+  // Humanize & Dynamics panel state
   const [showHumanizeModal, setShowHumanizeModal] = useState(false);
   const [humanizeVelRange, setHumanizeVelRange] = useState(FACTORY_PRESETS[0].settings.humanizeVelRange);
   const [randomMinVel, setRandomMinVel] = useState(FACTORY_PRESETS[0].settings.randomMinVel);
   const [randomMaxVel, setRandomMaxVel] = useState(FACTORY_PRESETS[0].settings.randomMaxVel);
+
+  // Rule-Based MIDI Generator state
+  const [showGeneratorPanel, setShowGeneratorPanel] = useState(false);
+  const [generatorType, setGeneratorType] = useState<GeneratorPatternType>('melody');
+  const [generatorBars, setGeneratorBars] = useState<2 | 4 | 8>(4);
+  const [isDawHostConnected, setIsDawHostConnected] = useState(false);
+  const [dawKeyDetected, setDawKeyDetected] = useState(false);
+  const [dawHostBpm, setDawHostBpm] = useState<number | null>(null);
+  const [dawHostTimeSig, setDawHostTimeSig] = useState<{ num: number; den: number } | null>(null);
+  const genCounterRef = useRef(0);
+  const wasMidiDraggedRef = useRef(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
@@ -354,13 +369,43 @@ export const PluginSimulator: React.FC = () => {
   useEffect(() => {
     if (!isJuceNative()) return;
 
-    const unsubTelemetry = onJuceEvent('dawTelemetry', (payload: any) => {
+    const unwrapJucePayload = (raw: any) => (Array.isArray(raw) && raw.length === 1 ? raw[0] : raw);
+
+    const unsubTelemetry = onJuceEvent('dawTelemetry', (rawPayload: any) => {
+      const payload = unwrapJucePayload(rawPayload);
       if (!payload) return;
       if (typeof payload.playheadPpq === 'number') {
         setPlayheadPpq(payload.playheadPpq);
       }
       if (typeof payload.isPlaying === 'boolean') {
         setIsPlaying(payload.isPlaying);
+      }
+      if (typeof payload.isDawConnected === 'boolean') {
+        setIsDawHostConnected(payload.isDawConnected);
+      }
+      if (
+        typeof payload.hostBpm === 'number' &&
+        payload.hostBpm >= 20 &&
+        payload.hostBpm <= 320 &&
+        (payload.hostBpmDetected || payload.isDawConnected)
+      ) {
+        const roundedBpm = Math.round(payload.hostBpm);
+        setDawHostBpm((prev) => (prev === roundedBpm ? prev : roundedBpm));
+      }
+      if (
+        payload.hostTimeSigDetected &&
+        typeof payload.hostTimeSigNumerator === 'number' &&
+        typeof payload.hostTimeSigDenominator === 'number' &&
+        payload.hostTimeSigNumerator > 0 &&
+        payload.hostTimeSigDenominator > 0
+      ) {
+        const num = payload.hostTimeSigNumerator;
+        const den = payload.hostTimeSigDenominator;
+        setDawHostTimeSig((prev) => (prev && prev.num === num && prev.den === den ? prev : { num, den }));
+      }
+      if (payload.hostKeyDetected) {
+        setDawKeyDetected(true);
+        setIsDawHostConnected(true);
       }
       if (payload.hostKeyDetected && typeof payload.hostKeyRoot === 'number') {
         const nextScale: ScaleType = payload.hostKeyIsMinor ? 'minor' : 'major';
@@ -377,11 +422,28 @@ export const PluginSimulator: React.FC = () => {
       }
     });
 
-    const unsubLibrary = onJuceEvent('libraryScanned', (payload: any) => {
+    const unsubLibrary = onJuceEvent('libraryScanned', (rawPayload: any) => {
+      const payload = unwrapJucePayload(rawPayload);
       setIsScanning(false);
       setIsWaitingFolderAuth(false);
       if (!payload || payload.canceled) {
         setNotificationBanner(null);
+        return;
+      }
+
+      if (Array.isArray(payload.scannedFolders)) {
+        setSavedFolderPaths(payload.scannedFolders.map((p: any) => String(p)).filter(Boolean));
+      }
+
+      if (payload.streamed) {
+        const addedCount = Number(payload.addedCount || 0);
+        setVisibleLibraryCount(50);
+        if (addedCount > 0) {
+          setNotificationBanner(
+            `✓ Added "${payload.folderName || 'Folder'}" (${addedCount.toLocaleString()} MIDI files) to library.`
+          );
+          setTimeout(() => setNotificationBanner(null), 4000);
+        }
         return;
       }
 
@@ -401,7 +463,9 @@ export const PluginSimulator: React.FC = () => {
       }
 
       setScannedFiles((prev) => {
-        if (prev.length === 0) return incoming;
+        if (prev.length === 0) {
+          return incoming;
+        }
         const existingKeys = new Set(
           prev.map((p) => p.nativePath || `${p.relativePath}::${p.sizeBytes}`)
         );
@@ -412,29 +476,50 @@ export const PluginSimulator: React.FC = () => {
       });
       setVisibleLibraryCount(50);
 
-      if (payload.firstFileBase64 && payload.firstFileName) {
-        try {
-          const buf = base64ToArrayBuffer(String(payload.firstFileBase64));
-          const parsed = parseMidiFile(buf, String(payload.firstFileName));
-          synthAudioEngine.stop();
-          setPlayheadPpq(0);
-          setSelectedNoteIds(new Set());
-          setActiveSourceType('scanned');
-          setCurrentScannedFileIdx(0);
-          setSequence(parsed);
-          setNotificationBanner(
-            `✓ Added folder: Found ${incoming.length.toLocaleString()} MIDI files. Loaded "${payload.firstFileName}".`
-          );
-          setTimeout(() => setNotificationBanner(null), 5000);
-        } catch (err) {
-          setNotificationBanner(`Added ${incoming.length.toLocaleString()} MIDI files to library.`);
-          setTimeout(() => setNotificationBanner(null), 4000);
-        }
+      setNotificationBanner(
+        `✓ Added "${payload.folderName || 'Folder'}" (${incoming.length.toLocaleString()} MIDI files) to library.`
+      );
+      setTimeout(() => setNotificationBanner(null), 4000);
+    });
+
+    const unsubLibraryChunk = onJuceEvent('libraryChunk', (rawPayload: any) => {
+      const payload = unwrapJucePayload(rawPayload);
+      if (!payload) return;
+
+      if (Array.isArray(payload.scannedFolders)) {
+        setSavedFolderPaths(payload.scannedFolders.map((p: any) => String(p)).filter(Boolean));
+      }
+
+      const chunk: ScannedMidiFile[] = Array.isArray(payload.files)
+        ? payload.files.map((f: any) => ({
+            name: String(f.name || 'Untitled.mid'),
+            relativePath: String(f.relativePath || f.name || 'Untitled.mid'),
+            nativePath: String(f.fullPath || ''),
+            sizeBytes: Number(f.sizeBytes || 0),
+          }))
+        : [];
+
+      if (payload.reset) {
+        setScannedFiles(chunk);
+      } else if (chunk.length > 0) {
+        setScannedFiles((prev) => [...prev, ...chunk]);
+      }
+
+      if (payload.done && payload.fromRescan) {
+        setIsRescanning(false);
+        const total = Number(payload.totalCount ?? chunk.length);
+        setNotificationBanner(`✓ Library rescanned (${total.toLocaleString()} MIDI files indexed).`);
+        setTimeout(() => setNotificationBanner(null), 3500);
       }
     });
 
-    const unsubMidiLoaded = onJuceEvent('midiFileLoaded', (payload: any) => {
-      if (!payload || !payload.base64) return;
+    const unsubMidiLoaded = onJuceEvent('midiFileLoaded', (rawPayload: any) => {
+      const payload = unwrapJucePayload(rawPayload);
+      if (!payload || !payload.base64) {
+        setNotificationBanner('Could not load MIDI file: empty data returned from host.');
+        setTimeout(() => setNotificationBanner(null), 4500);
+        return;
+      }
       try {
         const fileName = String(payload.name || 'Loaded.mid');
         const buf = base64ToArrayBuffer(String(payload.base64));
@@ -452,23 +537,41 @@ export const PluginSimulator: React.FC = () => {
           }
         }
         setSequence(parsed);
-        setNotificationBanner(`✓ Loaded "${fileName}" into piano roll.`);
-        setTimeout(() => setNotificationBanner(null), 3500);
+        if (parsed.notes.length === 0) {
+          setNotificationBanner(`Warning: "${fileName}" was loaded but contains no MIDI note events.`);
+          setTimeout(() => setNotificationBanner(null), 5000);
+        } else {
+          setNotificationBanner(`✓ Loaded "${fileName}" (${parsed.notes.length} notes) into piano roll.`);
+          setTimeout(() => setNotificationBanner(null), 3500);
+        }
       } catch (err) {
         setNotificationBanner(`Could not parse MIDI file: ${(err as Error).message}`);
         setTimeout(() => setNotificationBanner(null), 5000);
       }
     });
 
-    const unsubExportSaved = onJuceEvent('exportSaved', (payload: any) => {
+    const unsubMidiLoadError = onJuceEvent('midiFileLoadError', (rawPayload: any) => {
+      const payload = unwrapJucePayload(rawPayload);
+      const name = payload?.name ? `"${payload.name}"` : 'MIDI file';
+      const detail = payload?.error || 'File could not be read from disk.';
+      setNotificationBanner(`Unable to load ${name}: ${detail}`);
+      setTimeout(() => setNotificationBanner(null), 5500);
+    });
+
+    const unsubExportSaved = onJuceEvent('exportSaved', (rawPayload: any) => {
+      const payload = unwrapJucePayload(rawPayload);
       if (payload?.savedPath) {
         setNotificationBanner(`✓ Exported MIDI file to "${payload.savedPath}"`);
         setTimeout(() => setNotificationBanner(null), 4000);
       }
     });
 
-    const unsubRestore = onJuceEvent('restorePluginState', (payload: any) => {
+    const unsubRestore = onJuceEvent('restorePluginState', (rawPayload: any) => {
+      const payload = unwrapJucePayload(rawPayload);
       if (!payload) return;
+      if (Array.isArray(payload.scannedFolders)) {
+        setSavedFolderPaths(payload.scannedFolders.map((p: any) => String(p)).filter(Boolean));
+      }
       if (Array.isArray(payload.scannedFiles) && payload.scannedFiles.length > 0) {
         setScannedFiles(
           payload.scannedFiles.map((f: any) => ({
@@ -511,7 +614,9 @@ export const PluginSimulator: React.FC = () => {
     return () => {
       unsubTelemetry();
       unsubLibrary();
+      unsubLibraryChunk();
       unsubMidiLoaded();
+      unsubMidiLoadError();
       unsubExportSaved();
       unsubRestore();
     };
@@ -681,17 +786,172 @@ export const PluginSimulator: React.FC = () => {
     }
   }, [handleTempoChange]);
 
-  // Sync To Project Key (sets active scale & computes transposition matching project key)
+  // Keep sequence BPM & Meter matched to host DAW whenever Follow DAW mode is active
+  useEffect(() => {
+    if (params.syncMode !== 'daw') return;
+    setSequence((prev) => {
+      const nextBpm = dawHostBpm !== null ? dawHostBpm : prev.bpm;
+      const nextNum = dawHostTimeSig !== null ? dawHostTimeSig.num : prev.timeSigNumerator || 4;
+      const nextDen = dawHostTimeSig !== null ? dawHostTimeSig.den : prev.timeSigDenominator || 4;
+      if (
+        prev.bpm === nextBpm &&
+        (prev.timeSigNumerator || 4) === nextNum &&
+        (prev.timeSigDenominator || 4) === nextDen
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        bpm: nextBpm,
+        timeSigNumerator: nextNum,
+        timeSigDenominator: nextDen,
+      };
+    });
+    if (dawHostBpm !== null) {
+      setTempoInputValue(String(dawHostBpm));
+      synthAudioEngine.setTempo(dawHostBpm);
+    }
+  }, [params.syncMode, dawHostBpm, dawHostTimeSig]);
+
+  // Sync To Project Key & DAW BPM/Meter (matches active key, transpose, and host DAW tempo/meter)
   const syncToProjectKey = () => {
-    pushHistorySnapshot(`Sync to Project Key (${getNoteName(params.projectKeyRoot)} ${SCALE_DEFINITIONS[params.projectScaleType]?.name || params.projectScaleType})`);
+    const targetScaleName = SCALE_DEFINITIONS[params.projectScaleType]?.name || params.projectScaleType;
+    const keyLabel = `${getNoteName(params.projectKeyRoot)} ${targetScaleName}`;
+    pushHistorySnapshot(
+      dawHostBpm !== null
+        ? `Sync to DAW (${keyLabel} · ${dawHostBpm} BPM)`
+        : `Sync to Project Key (${keyLabel})`
+    );
     const semitones = calculateSemitoneOffsetToTarget(keyResult.rootPitch, params.projectKeyRoot);
     setParams((prev) => ({
       ...prev,
       scaleRoot: prev.projectKeyRoot,
       scaleType: prev.projectScaleType,
       transpose: semitones,
+      syncMode: dawHostBpm !== null || dawHostTimeSig !== null ? 'daw' : prev.syncMode,
     }));
+
+    if (dawHostBpm !== null || dawHostTimeSig !== null) {
+      setSequence((prev) => ({
+        ...prev,
+        bpm: dawHostBpm ?? prev.bpm,
+        timeSigNumerator: dawHostTimeSig?.num ?? (prev.timeSigNumerator || 4),
+        timeSigDenominator: dawHostTimeSig?.den ?? (prev.timeSigDenominator || 4),
+      }));
+      if (dawHostBpm !== null) {
+        setTempoInputValue(String(dawHostBpm));
+        synthAudioEngine.setTempo(dawHostBpm);
+      }
+      setNotificationBanner(
+        `✓ Synced to Project: ${keyLabel}${dawHostBpm !== null ? ` @ ${dawHostBpm} BPM` : ''}${
+          dawHostTimeSig ? ` (${dawHostTimeSig.num}/${dawHostTimeSig.den})` : ''
+        }`
+      );
+    } else {
+      setNotificationBanner(`✓ Synced to Project Key: ${keyLabel}`);
+    }
+    window.setTimeout(() => setNotificationBanner(null), 3500);
   };
+
+  // Active key selection for rule-based generation: DAW Project Key when connected, otherwise App Key
+  const isConnectedToDaw =
+    (isJuceNative() && (isDawHostConnected || dawKeyDetected)) || params.syncMode === 'daw';
+  const effectiveGenRoot = isConnectedToDaw ? params.projectKeyRoot : params.scaleRoot;
+  const effectiveGenScale = isConnectedToDaw ? params.projectScaleType : params.scaleType;
+
+  const handleGeneratePattern = useCallback(
+    (overrideType?: GeneratorPatternType) => {
+      const patternType = overrideType ?? generatorType;
+      if (overrideType) setGeneratorType(overrideType);
+
+      const targetRoot = effectiveGenRoot;
+      const targetScale = effectiveGenScale;
+      const keySourceLabel = isConnectedToDaw ? 'DAW Project Key' : 'App Key';
+      const rootLabel = getNoteName(targetRoot);
+      const scaleLabel = SCALE_DEFINITIONS[targetScale]?.name || targetScale;
+
+      pushHistorySnapshot(`Generate ${patternType} (${rootLabel} ${scaleLabel})`);
+      const lockedNotes = sequenceRef.current.notes.filter((n) => n.locked);
+      const timeSigNum = sequence.timeSigNumerator || 4;
+      const timeSigDen = sequence.timeSigDenominator || 4;
+      const barPpq = timeSigNum * (4 / timeSigDen);
+
+      const generated = generateMusicalPattern({
+        type: patternType,
+        scaleRoot: targetRoot,
+        scaleType: targetScale,
+        bars: generatorBars,
+        bpm: sequence.bpm,
+        timeSigNumerator: timeSigNum,
+        timeSigDenominator: timeSigDen,
+        keySource: isConnectedToDaw ? 'daw' : 'app',
+      });
+
+      const preservedLocked = lockedNotes.map((n, idx) => ({
+        ...n,
+        id: idx + 1,
+        locked: true,
+      }));
+      const idOffset = preservedLocked.length;
+      const newGeneratedNotes = generated.notes.map((n, idx) => ({
+        ...n,
+        id: idOffset + idx + 1,
+        locked: false,
+      }));
+      const mergedNotes = [...preservedLocked, ...newGeneratedNotes].sort(
+        (a, b) => a.startPpq - b.startPpq
+      );
+
+      const maxLockedEnd = preservedLocked.reduce(
+        (max, n) => Math.max(max, n.startPpq + n.durationPpq),
+        0
+      );
+      const finalLengthPpq =
+        maxLockedEnd > generated.totalLengthPpq
+          ? Math.ceil(maxLockedEnd / barPpq) * barPpq
+          : generated.totalLengthPpq;
+
+      genCounterRef.current += 1;
+      const numberedSeq: MidiSequence = {
+        ...generated,
+        name: `${generated.name} #${genCounterRef.current}`,
+        totalLengthPpq: finalLengthPpq,
+        notes: mergedNotes,
+      };
+
+      synthAudioEngine.stop();
+      setPlayheadPpq(0);
+      setSelectedNoteIds(new Set());
+      setActiveSourceType('custom');
+      setCurrentScannedFileIdx(-1);
+      setSequence(numberedSeq);
+
+      setParams((prev) => ({
+        ...prev,
+        transpose: 0,
+        scaleRoot: targetRoot,
+        scaleType: targetScale,
+      }));
+
+      setNotificationBanner(
+        preservedLocked.length > 0
+          ? `Generated ${patternType.toUpperCase()} in ${rootLabel} ${scaleLabel} (${keySourceLabel}) · Preserved ${preservedLocked.length} locked note${preservedLocked.length > 1 ? 's' : ''}`
+          : `Generated ${patternType.toUpperCase()} in ${rootLabel} ${scaleLabel} (${keySourceLabel})`
+      );
+      window.setTimeout(() => setNotificationBanner(null), 4000);
+    },
+    [
+      generatorType,
+      generatorBars,
+      effectiveGenRoot,
+      effectiveGenScale,
+      isConnectedToDaw,
+      sequence.bpm,
+      sequence.timeSigNumerator,
+      sequence.timeSigDenominator,
+      pushHistorySnapshot,
+    ]
+  );
 
   // Target Key Match (sets scale and applies offset to target key)
   const applyTargetKeyMatch = () => {
@@ -749,10 +1009,14 @@ export const PluginSimulator: React.FC = () => {
     setSequence((s) => ({ ...s, notes: updated }));
   };
 
-  // Humanize Velocity
+  // Humanise Velocity (±Jitter)
   const applyHumanizeVelocity = () => {
-    pushHistorySnapshot(`Humanize Velocity (\u00B1${humanizeVelRange})`);
-    const updated = humanizeNotesVelocity(sequence.notes, new Set(), humanizeVelRange);
+    pushHistorySnapshot(`Humanise Velocity (±${humanizeVelRange})`);
+    const updated = humanizeNotesVelocity(
+      sequence.notes,
+      selectedNoteIds,
+      humanizeVelRange
+    );
     setSequence((s) => ({ ...s, notes: updated }));
   };
 
@@ -761,7 +1025,7 @@ export const PluginSimulator: React.FC = () => {
     pushHistorySnapshot(`Randomize Velocity Range (${randomMinVel}-${randomMaxVel})`);
     const updated = randomizeNotesVelocityRange(
       sequence.notes,
-      new Set(),
+      selectedNoteIds,
       randomMinVel / 127.0,
       randomMaxVel / 127.0
     );
@@ -771,7 +1035,7 @@ export const PluginSimulator: React.FC = () => {
   // Humanize Timing
   const applyHumanizeTiming = () => {
     pushHistorySnapshot('Humanize Timing');
-    const updated = humanizeNotesTiming(sequence.notes, new Set(), 0.03);
+    const updated = humanizeNotesTiming(sequence.notes, selectedNoteIds, 0.03);
     setSequence((s) => ({ ...s, notes: updated }));
   };
 
@@ -954,16 +1218,27 @@ export const PluginSimulator: React.FC = () => {
     if (item.file) {
       loadMidiFromFile(item.file);
     } else if (item.nativePath && isJuceNative()) {
+      setNotificationBanner(`⏳ Loading "${item.name}" (syncing from cloud if needed)...`);
       emitToJuce('nativeLoadFile', {
+        name: item.name,
         fullPath: item.nativePath,
         index: typeof idx === 'number' ? idx : -1,
         sourceType: 'scanned',
       });
+    } else {
+      setNotificationBanner(
+        `Unable to load "${item.name}": file handle unavailable. Please re-scan the folder.`
+      );
+      setTimeout(() => setNotificationBanner(null), 5000);
     }
   };
 
   // Handle file or preset selection from the top dropdown
   const handleItemSelect = (val: string) => {
+    if (val === 'open_library') {
+      setShowFolderModal(true);
+      return;
+    }
     if (val.startsWith('scanned_')) {
       const idx = Number(val.replace('scanned_', ''));
       const item = scannedFiles[idx];
@@ -978,6 +1253,13 @@ export const PluginSimulator: React.FC = () => {
       handleSelectSequence(idx);
     }
   };
+
+  const handleRescanSavedFolders = useCallback(() => {
+    if (!isJuceNative() || isRescanning) return;
+    setIsRescanning(true);
+    setNotificationBanner('⏳ Re-checking remembered folders for new MIDI files...');
+    emitToJuce('rescanSavedFolders', {});
+  }, [isRescanning]);
 
   // Step backwards / forwards across active source items (scanned files or presets)
   const handleStepItem = (direction: -1 | 1) => {
@@ -1005,8 +1287,6 @@ export const PluginSimulator: React.FC = () => {
       setActiveSourceType('scanned');
       pushHistorySnapshot(`Random Library Pick (${chosen.name})`);
       loadScannedItem(chosen, randIdx);
-      setNotificationBanner(`🎲 Library Random: "${chosen.name}" (${(randIdx + 1).toLocaleString()} of ${scannedFiles.length.toLocaleString()} files)`);
-      setTimeout(() => setNotificationBanner(null), 4000);
     } else {
       // Library is empty: prompt user to scan their folder and open folder picker directly
       setNotificationBanner("📁 Your MIDI library is empty. Please select a folder to build your library!");
@@ -1025,8 +1305,6 @@ export const PluginSimulator: React.FC = () => {
       setCurrentScannedFileIdx(-1);
       pushHistorySnapshot(`Open File (${file.name})`);
       loadMidiFromFile(file);
-      setNotificationBanner(`✓ Loaded "${file.name}" into piano roll.`);
-      setTimeout(() => setNotificationBanner(null), 4000);
     } else {
       // Multiple files selected at once: add them all to the library and open the library modal
       const discovered: ScannedMidiFile[] = [];
@@ -1049,8 +1327,6 @@ export const PluginSimulator: React.FC = () => {
         setActiveSourceType('scanned');
         pushHistorySnapshot(`Open Multiple Files (Loaded ${discovered[0].name})`);
         loadMidiFromFile(discovered[0].file);
-        setNotificationBanner(`✓ Added ${discovered.length} MIDI files to library. Loaded "${discovered[0].name}" into piano roll.`);
-        setTimeout(() => setNotificationBanner(null), 5000);
       }
     }
 
@@ -1071,21 +1347,22 @@ export const PluginSimulator: React.FC = () => {
     }
   };
 
-  // Stop scanning and immediately show all discovered files
+  // Stop scanning and keep all discovered files in the library
   const stopAndShowResults = () => {
     isCancelledRef.current = true;
     setIsScanning(false);
     setIsWaitingFolderAuth(false);
     const discovered = [...currentDiscoveredRef.current];
-    setScannedFiles(discovered);
+    setScannedFiles((prev) => {
+      if (prev.length === 0) return discovered;
+      const existingKeys = new Set(prev.map((p) => `${p.relativePath}::${p.sizeBytes}`));
+      const deduped = discovered.filter((d) => !existingKeys.has(`${d.relativePath}::${d.sizeBytes}`));
+      return [...prev, ...deduped];
+    });
     setVisibleLibraryCount(50);
     if (discovered.length > 0) {
-      setCurrentScannedFileIdx(0);
-      setActiveSourceType('scanned');
-      pushHistorySnapshot(`Stopped Scan (Loaded ${discovered[0].name})`);
-      loadScannedItem(discovered[0], 0);
-      setNotificationBanner(`✓ Stopped scan: Discovered ${discovered.length} MIDI files. Loaded "${discovered[0].name}" into piano roll.`);
-      setTimeout(() => setNotificationBanner(null), 5000);
+      setNotificationBanner(`✓ Added ${discovered.length.toLocaleString()} MIDI files to library.`);
+      setTimeout(() => setNotificationBanner(null), 4000);
     }
     if (folderInputRef.current) {
       folderInputRef.current.value = '';
@@ -1190,13 +1467,8 @@ export const PluginSimulator: React.FC = () => {
         setVisibleLibraryCount(50);
 
         if (discovered.length > 0) {
-          // Immediately load the 1st newly discovered MIDI file into the piano roll!
-          setCurrentScannedFileIdx(0);
-          setActiveSourceType('scanned');
-          pushHistorySnapshot(`Scan Folder (Loaded ${discovered[0].name})`);
-          loadScannedItem(discovered[0], 0);
-          setNotificationBanner(`✓ Added folder: Found ${discovered.length.toLocaleString()} MIDI files (Library updated). Loaded "${discovered[0].name}".`);
-          setTimeout(() => setNotificationBanner(null), 6000);
+          setNotificationBanner(`✓ Added ${discovered.length.toLocaleString()} MIDI files to library.`);
+          setTimeout(() => setNotificationBanner(null), 4000);
         } else {
           setNotificationBanner(`Scanned ${totalFiles.toLocaleString()} files: No .mid or .midi files found in the selected folder.`);
           setTimeout(() => setNotificationBanner(null), 6000);
@@ -1214,10 +1486,18 @@ export const PluginSimulator: React.FC = () => {
 
   const loadMidiFromFile = (file?: File) => {
     if (!file) return;
+    setNotificationBanner(`⏳ Loading "${file.name}"...`);
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
         const buffer = event.target?.result as ArrayBuffer;
+        if (!buffer || buffer.byteLength === 0) {
+          setNotificationBanner(
+            `Unable to load "${file.name}": 0 bytes read (if stored online-only in Google Drive/iCloud, mark the folder "Available offline" or load via the installed AU/Standalone plugin).`
+          );
+          setTimeout(() => setNotificationBanner(null), 6500);
+          return;
+        }
         const parsed = parseMidiFile(buffer, file.name);
         synthAudioEngine.stop();
         setPlayheadPpq(0);
@@ -1226,11 +1506,18 @@ export const PluginSimulator: React.FC = () => {
         if (parsed.notes.length === 0) {
           setNotificationBanner(`Warning: "${file.name}" was loaded but contains no MIDI note events.`);
           setTimeout(() => setNotificationBanner(null), 5000);
+        } else {
+          setNotificationBanner(`✓ Loaded "${file.name}" (${parsed.notes.length} notes) into piano roll.`);
+          setTimeout(() => setNotificationBanner(null), 3500);
         }
       } catch (err) {
         setNotificationBanner('Could not parse MIDI file: ' + (err as Error).message);
         setTimeout(() => setNotificationBanner(null), 5000);
       }
+    };
+    reader.onerror = () => {
+      setNotificationBanner(`Could not read "${file.name}". Please check file permissions.`);
+      setTimeout(() => setNotificationBanner(null), 5000);
     };
     reader.readAsArrayBuffer(file);
   };
@@ -1320,16 +1607,17 @@ export const PluginSimulator: React.FC = () => {
       }
 
       if (!isCancelledRef.current) {
-        setScannedFiles([...discovered]);
+        setScannedFiles((prev) => {
+          if (prev.length === 0) return [...discovered];
+          const existingKeys = new Set(prev.map((p) => `${p.relativePath}::${p.sizeBytes}`));
+          const deduped = discovered.filter((d) => !existingKeys.has(`${d.relativePath}::${d.sizeBytes}`));
+          return [...prev, ...deduped];
+        });
         setIsScanning(false);
         setVisibleLibraryCount(50);
         if (discovered.length > 0) {
-          setCurrentScannedFileIdx(0);
-          setActiveSourceType('scanned');
-          pushHistorySnapshot(`Drop Folder (Loaded ${discovered[0].name})`);
-          loadMidiFromFile(discovered[0].file);
-          setNotificationBanner(`✓ Dropped folder: Discovered ${discovered.length} MIDI files. Loaded "${discovered[0].name}".`);
-          setTimeout(() => setNotificationBanner(null), 5000);
+          setNotificationBanner(`✓ Added ${discovered.length.toLocaleString()} MIDI files from dropped folder to library.`);
+          setTimeout(() => setNotificationBanner(null), 4000);
         } else {
           setNotificationBanner('No .mid or .midi files were found in the dropped folder.');
           setTimeout(() => setNotificationBanner(null), 5000);
@@ -1345,8 +1633,6 @@ export const PluginSimulator: React.FC = () => {
       setCurrentScannedFileIdx(-1);
       pushHistorySnapshot(`Drop File (${file.name})`);
       loadMidiFromFile(file);
-      setNotificationBanner(`✓ Loaded "${file.name}" into piano roll.`);
-      setTimeout(() => setNotificationBanner(null), 4000);
     }
   };
 
@@ -1379,20 +1665,31 @@ export const PluginSimulator: React.FC = () => {
   const currentBeat = Math.floor((playheadPpq % barPpq) / beatPpq) + 1;
   const currentTick = Math.floor(((playheadPpq % beatPpq) / beatPpq) * 100);
 
-  const groupedScannedFiles: Record<string, { file: ScannedMidiFile; originalIndex: number }[]> = useMemo(() => {
-    const map: Record<string, { file: ScannedMidiFile; originalIndex: number }[]> = {};
-    scannedFiles.forEach((file, idx) => {
-      const parts = file.relativePath.split('/');
-      const folder = parts.length > 1 ? parts.slice(0, -1).join('/') : 'Root Folder';
-      if (!map[folder]) map[folder] = [];
-      map[folder].push({ file, originalIndex: idx });
-    });
-    return map;
-  }, [scannedFiles]);
+  // Keep quick-jump <select> capped at 25 nearby items so WKWebView never builds 10k+ <option> DOM nodes
+  const quickScannedWindow = useMemo(() => {
+    if (scannedFiles.length === 0) {
+      return { start: 0, items: [] as { file: ScannedMidiFile; originalIndex: number }[] };
+    }
+    const windowSize = 25;
+    const center =
+      currentScannedFileIdx >= 0 && currentScannedFileIdx < scannedFiles.length
+        ? currentScannedFileIdx
+        : 0;
+    const start = Math.max(
+      0,
+      Math.min(scannedFiles.length - windowSize, center - Math.floor(windowSize / 2))
+    );
+    const end = Math.min(scannedFiles.length, start + windowSize);
+    const items: { file: ScannedMidiFile; originalIndex: number }[] = [];
+    for (let i = start; i < end; i++) {
+      items.push({ file: scannedFiles[i], originalIndex: i });
+    }
+    return { start, items };
+  }, [scannedFiles, currentScannedFileIdx]);
 
   return (
     <div
-      className="relative flex flex-col w-full h-full bg-gradient-to-b from-[#1c1e22] via-[#191b1f] to-[#141618] text-neutral-200 border-2 border-black/90 rounded-md overflow-hidden shadow-[0_25px_50px_-12px_rgba(0,0,0,0.95)] font-sans border-t border-t-white/15 border-b-2 border-b-black/95 select-none"
+      className="relative flex flex-col w-full min-h-full bg-gradient-to-b from-[#1c1e22] via-[#191b1f] to-[#141618] text-neutral-200 border-2 border-black/90 rounded-md shadow-[0_25px_50px_-12px_rgba(0,0,0,0.95)] font-sans border-t border-t-white/15 border-b-2 border-b-black/95 select-none"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -1407,7 +1704,7 @@ export const PluginSimulator: React.FC = () => {
       )}
 
       {/* Top Channel Strip 1: Chassis Branding, Rack Screws, Active Sequence Tube, and Random Generator */}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 bg-[#1c1e22] border-b-2 border-black/80 shadow-[0_1px_0_rgba(255,255,255,0.06)]">
+      <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 px-4 py-2 bg-[#1c1e22] border-b-2 border-black/80 shadow-[0_1px_0_rgba(255,255,255,0.06)]">
         <div className="flex flex-wrap items-center gap-3">
           {/* Top-Left Flush Allen Rack-Screw */}
           <svg className="w-3.5 h-3.5 text-neutral-600 opacity-60 shrink-0" viewBox="0 0 24 24" fill="currentColor">
@@ -1465,8 +1762,8 @@ export const PluginSimulator: React.FC = () => {
         </div>
       </div>
 
-      {/* Channel Strip 2: Presets, Stamped File Well, Scan Folder, Open, and Industrial Export MIDI */}
-      <div className="flex items-center justify-between gap-2 px-4 py-2 bg-[#181a1e] border-b-2 border-black/80 shadow-[0_1px_0_rgba(255,255,255,0.06)] overflow-x-auto no-scrollbar">
+      {/* Channel Strip 2: Presets, Stamped File Well, Scan Folder, Open, Drag to DAW & Export MIDI */}
+      <div className="shrink-0 flex flex-wrap items-center justify-between gap-2 px-4 py-2 bg-[#181a1e] border-b-2 border-black/80 shadow-[0_1px_0_rgba(255,255,255,0.06)]">
         {/* Left: Preset Selector + Stamped Library Socket */}
         <div className="flex items-center gap-2 shrink-0">
           {/* Preset Manager Button */}
@@ -1513,16 +1810,26 @@ export const PluginSimulator: React.FC = () => {
                   </optgroup>
                 )}
 
-                {Object.keys(groupedScannedFiles).length > 0 &&
-                  Object.entries(groupedScannedFiles).slice(0, 100).map(([folderName, items]: [string, { file: ScannedMidiFile; originalIndex: number }[]]) => (
-                    <optgroup key={folderName} label={`📁 ${folderName} (${items.length})`}>
-                      {items.slice(0, 100).map(({ file, originalIndex }) => (
-                        <option key={`scanned_${originalIndex}`} value={`scanned_${originalIndex}`} className="bg-[#121418] text-neutral-200">
-                          {file.name}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
+                {quickScannedWindow.items.length > 0 && (
+                  <optgroup
+                    label={`📁 Library (${scannedFiles.length.toLocaleString()} files${
+                      scannedFiles.length > quickScannedWindow.items.length
+                        ? ` · ${quickScannedWindow.start + 1}-${quickScannedWindow.start + quickScannedWindow.items.length}`
+                        : ''
+                    })`}
+                  >
+                    {quickScannedWindow.items.map(({ file, originalIndex }) => (
+                      <option key={`scanned_${originalIndex}`} value={`scanned_${originalIndex}`} className="bg-[#121418] text-neutral-200">
+                        {file.name}
+                      </option>
+                    ))}
+                    {scannedFiles.length > quickScannedWindow.items.length && (
+                      <option value="open_library" className="bg-[#121418] text-amber-400">
+                        Browse all {scannedFiles.length.toLocaleString()} files in Library...
+                      </option>
+                    )}
+                  </optgroup>
+                )}
 
                 {PRESET_PACKS.map((pack) => {
                   const packItems = PRESET_SEQUENCES.map((p, idx) => ({ p, idx })).filter(
@@ -1630,72 +1937,138 @@ export const PluginSimulator: React.FC = () => {
             onChange={handleFileUpload}
           />
 
-          {/* Heavy Tactile Industrial Export / Drag-to-DAW Button */}
+          {/* Dedicated Drag MIDI to DAW Hardware Grip Handle */}
           <button
-            onClick={() => setShowExportModal(true)}
+            type="button"
+            onClick={() => {
+              if (wasMidiDraggedRef.current) {
+                wasMidiDraggedRef.current = false;
+                return;
+              }
+              setNotificationBanner(
+                isJuceNative()
+                  ? 'Click, hold, and drag "DRAG MIDI TO DAW" directly onto any DAW track to drop the .mid clip.'
+                  : 'Grab and drag onto your desktop/DAW, or use EXPORT MIDI to download a .mid file.'
+              );
+              window.setTimeout(() => setNotificationBanner(null), 4000);
+            }}
             onMouseDown={(e) => {
               if (!isJuceNative() || e.button !== 0) return;
+              e.preventDefault();
+              wasMidiDraggedRef.current = false;
+
               const startX = e.clientX;
               const startY = e.clientY;
               let dragged = false;
 
+              const exportSeq: MidiSequence = params.arpEnabled
+                ? {
+                    ...sequence,
+                    notes: arpeggiateNotes(sequence.notes, sequence.totalLengthPpq, {
+                      mode: params.arpMode,
+                      rate: params.arpRate,
+                      octaves: params.arpOctaves,
+                      gate: params.arpGate,
+                    }),
+                  }
+                : sequence;
+
+              const midiBytes = serializeMidiFile(
+                exportSeq,
+                params.transpose,
+                params.velocityScale,
+                params.velocityOffset,
+                sequence.bpm * params.speedMultiplier
+              );
+              const safeName = `${sequence.name.replace(/[^a-zA-Z0-9_-]/g, '_') || 'MidiLens_Clip'}.mid`;
+              const base64Payload = uint8ArrayToBase64(midiBytes);
+
+              const triggerNativeDrag = () => {
+                if (dragged) return;
+                dragged = true;
+                wasMidiDraggedRef.current = true;
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onUp);
+                btnEl.removeEventListener('mouseleave', onLeave);
+                emitToJuce('nativeDragMidiToDaw', {
+                  filename: safeName,
+                  base64: base64Payload,
+                });
+              };
+
+              const btnEl = e.currentTarget;
+
               const onMove = (mv: MouseEvent) => {
-                if (!dragged && Math.hypot(mv.clientX - startX, mv.clientY - startY) > 5) {
-                  dragged = true;
-                  window.removeEventListener('mousemove', onMove);
-                  window.removeEventListener('mouseup', onUp);
+                if (!dragged && Math.hypot(mv.clientX - startX, mv.clientY - startY) >= 2) {
+                  triggerNativeDrag();
+                }
+              };
 
-                  const exportSeq: MidiSequence = params.arpEnabled
-                    ? {
-                        ...sequence,
-                        notes: arpeggiateNotes(sequence.notes, sequence.totalLengthPpq, {
-                          mode: params.arpMode,
-                          rate: params.arpRate,
-                          octaves: params.arpOctaves,
-                          gate: params.arpGate,
-                        }),
-                      }
-                    : sequence;
-
-                  const midiBytes = serializeMidiFile(
-                    exportSeq,
-                    params.transpose,
-                    params.velocityScale,
-                    params.velocityOffset,
-                    sequence.bpm * params.speedMultiplier
-                  );
-                  const safeName = `${sequence.name.replace(/[^a-zA-Z0-9_-]/g, '_') || 'MidiLens_Clip'}.mid`;
-                  emitToJuce('nativeDragMidiToDaw', {
-                    filename: safeName,
-                    base64: uint8ArrayToBase64(midiBytes),
-                  });
+              const onLeave = (lv: MouseEvent) => {
+                if (!dragged && (lv.buttons & 1) === 1) {
+                  triggerNativeDrag();
                 }
               };
 
               const onUp = () => {
                 window.removeEventListener('mousemove', onMove);
                 window.removeEventListener('mouseup', onUp);
+                btnEl.removeEventListener('mouseleave', onLeave);
               };
 
               window.addEventListener('mousemove', onMove);
               window.addEventListener('mouseup', onUp);
+              btnEl.addEventListener('mouseleave', onLeave);
             }}
             draggable={!isJuceNative()}
             onDragStart={(e) => {
-              e.dataTransfer.setData('text/plain', sequence.name);
+              const exportSeq: MidiSequence = params.arpEnabled
+                ? {
+                    ...sequence,
+                    notes: arpeggiateNotes(sequence.notes, sequence.totalLengthPpq, {
+                      mode: params.arpMode,
+                      rate: params.arpRate,
+                      octaves: params.arpOctaves,
+                      gate: params.arpGate,
+                    }),
+                  }
+                : sequence;
+              const midiBytes = serializeMidiFile(
+                exportSeq,
+                params.transpose,
+                params.velocityScale,
+                params.velocityOffset,
+                sequence.bpm * params.speedMultiplier
+              );
+              const safeName = `${sequence.name.replace(/[^a-zA-Z0-9_-]/g, '_') || 'MidiLens_Clip'}.mid`;
+              const blob = new Blob([midiBytes.buffer as ArrayBuffer], { type: 'audio/midi' });
+              const blobUrl = URL.createObjectURL(blob);
+              e.dataTransfer.setData('text/plain', safeName);
+              e.dataTransfer.setData('DownloadURL', `audio/midi:${safeName}:${blobUrl}`);
+              window.setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
             }}
-            title="Drag directly onto a DAW track, or click to export Type 0 / Type 1 .mid"
-            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-gradient-to-b from-[#f59e0b] via-[#d97706] to-[#b45309] text-black font-extrabold text-[11px] font-mono tracking-wider uppercase rounded shadow-[0_2px_4px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.4)] active:translate-y-0.5 border border-amber-300/40 cursor-grab active:cursor-grabbing transition whitespace-nowrap"
+            title="Click, hold & drag directly onto a Logic Pro / Ableton / FL Studio MIDI track"
+            className="flex items-center gap-1 px-2.5 py-1.5 bg-gradient-to-b from-emerald-500 to-emerald-700 hover:from-emerald-400 hover:to-emerald-600 text-black font-extrabold text-[10.5px] font-mono tracking-wider uppercase rounded shadow-[0_2px_4px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.4)] active:translate-y-0.5 border border-emerald-300/50 cursor-grab active:cursor-grabbing transition whitespace-nowrap"
+          >
+            <GripVertical className="w-3.5 h-3.5 text-black shrink-0" />
+            <span>DRAG MIDI TO DAW</span>
+          </button>
+
+          {/* Heavy Tactile Industrial Export MIDI Button */}
+          <button
+            onClick={() => setShowExportModal(true)}
+            title="Export processed MIDI file (Type 0 / Type 1 .mid)"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-b from-[#f59e0b] via-[#d97706] to-[#b45309] text-black font-extrabold text-[10.5px] font-mono tracking-wider uppercase rounded shadow-[0_2px_4px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.4)] active:translate-y-0.5 border border-amber-300/40 cursor-pointer transition whitespace-nowrap"
           >
             <Download className="w-3.5 h-3.5 text-black" />
-            <span>EXPORT MIDI (.MID)</span>
+            <span>EXPORT MIDI</span>
           </button>
         </div>
       </div>
 
       {/* Top Interactive Notification / Scan Alert Banner */}
       {notificationBanner && (
-        <div className="bg-amber-500/15 border-b border-amber-500/30 px-5 py-2 flex items-center justify-between text-xs font-mono text-amber-300 transition animate-in fade-in">
+        <div className="shrink-0 bg-amber-500/15 border-b border-amber-500/30 px-5 py-2 flex items-center justify-between text-xs font-mono text-amber-300 transition animate-in fade-in">
           <div className="flex items-center gap-2 truncate">
             {isScanning || isWaitingFolderAuth ? (
               <Loader2 className="w-4 h-4 animate-spin text-amber-400 shrink-0" />
@@ -1717,7 +2090,7 @@ export const PluginSimulator: React.FC = () => {
       )}
 
       {/* Channel Strip 3: Transport & Telemetry Deck */}
-      <div className="flex flex-wrap items-center justify-between gap-2.5 px-4 py-1.5 bg-[#15171a] border-b border-black/80 shadow-[0_1px_0_rgba(255,255,255,0.06)] overflow-x-auto no-scrollbar">
+      <div className="shrink-0 flex flex-wrap items-center justify-between gap-2.5 px-4 py-1.5 bg-[#15171a] border-b border-black/80 shadow-[0_1px_0_rgba(255,255,255,0.06)] overflow-x-auto no-scrollbar">
         {/* Left: Vintage Tape Transport + Undo/Redo */}
         <div className="flex items-center gap-2 shrink-0">
           <div className="flex items-center gap-1 bg-[#0c0e10] p-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
@@ -1751,6 +2124,28 @@ export const PluginSimulator: React.FC = () => {
               title="Toggle Loop"
             >
               <Repeat className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              onClick={() =>
+                setParams((p) => ({
+                  ...p,
+                  syncMode: p.syncMode === 'daw' ? 'audition' : 'daw',
+                }))
+              }
+              className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono font-bold uppercase tracking-wider transition active:translate-y-0.5 ${
+                params.syncMode === 'daw'
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/70 shadow-[0_0_8px_rgba(16,185,129,0.35)]'
+                  : 'hardware-button text-neutral-400 hover:text-neutral-200'
+              }`}
+              title={
+                params.syncMode === 'daw'
+                  ? 'Sync Play ON: Pressing Play/Stop in the DAW automatically starts/stops MidiLens'
+                  : 'Sync Play OFF (Free Audition): MidiLens plays independently from DAW transport'
+              }
+            >
+              <Radio className={`w-3 h-3 ${params.syncMode === 'daw' ? 'text-emerald-400 animate-pulse' : 'text-neutral-500'}`} />
+              <span>SYNC PLAY</span>
             </button>
           </div>
 
@@ -1941,7 +2336,7 @@ export const PluginSimulator: React.FC = () => {
       </div>
 
       {/* Channel Strip 4: Musical Scale Matrix & PROMINENT MODULE SWITCHES */}
-      <div className="flex flex-wrap items-center justify-between gap-2.5 px-4 py-2 bg-[#181a1d] border-b-2 border-black/90 shadow-[0_1px_0_rgba(255,255,255,0.06)] overflow-x-auto no-scrollbar">
+      <div className="shrink-0 flex flex-wrap items-center justify-between gap-2.5 px-4 py-2 bg-[#181a1d] border-b-2 border-black/90 shadow-[0_1px_0_rgba(255,255,255,0.06)] overflow-x-auto no-scrollbar">
         {/* Left: Active Scale Matrix */}
         <div className="flex flex-wrap items-center gap-2 shrink-0">
           <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
@@ -1989,16 +2384,60 @@ export const PluginSimulator: React.FC = () => {
             </button>
           </div>
 
-          {/* DAW Project Key (Read-only CRT Telemetry drawn from host DAW) */}
-          <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+          {/* DAW Project Key & BPM (Auto-reads MIDI Key Signature meta-event if sent by host; editable because AU hosts like Logic Pro only broadcast BPM/Meter, not global Project Key) */}
+          <div
+            className="flex items-center gap-1.5 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]"
+            title={
+              dawKeyDetected
+                ? 'Project Key received from host DAW MIDI Key Signature meta-event'
+                : 'Audio Units (Logic Pro) share live BPM & Meter with plugins, not global Project Key. Select your DAW Project Key here (auto-updates if host sends a Key Signature meta-event).'
+            }
+          >
             <span className="silkscreen-label text-neutral-500">PROJECT:</span>
-            <span className="text-xs font-mono font-bold text-emerald-400 tracking-wide">
-              {getNoteName(params.projectKeyRoot)} {params.projectScaleType === 'minor' ? 'min' : 'maj'}
-            </span>
+            <select
+              value={params.projectKeyRoot}
+              onChange={(e) => {
+                setDawKeyDetected(false);
+                setParams((p) => ({ ...p, projectKeyRoot: Number(e.target.value) }));
+              }}
+              className="bg-transparent text-xs font-mono font-bold text-emerald-400 focus:outline-none cursor-pointer"
+              title="Set DAW Project Root Key"
+            >
+              {Array.from({ length: 12 }).map((_, i) => (
+                <option key={i} value={i} className="bg-[#121418] text-neutral-200">
+                  {getNoteName(i)}
+                </option>
+              ))}
+            </select>
+            <select
+              value={params.projectScaleType}
+              onChange={(e) => {
+                setDawKeyDetected(false);
+                setParams((p) => ({ ...p, projectScaleType: e.target.value as ScaleType }));
+              }}
+              className="bg-transparent text-[11px] font-mono font-bold text-emerald-400 focus:outline-none cursor-pointer"
+              title="Set DAW Project Scale"
+            >
+              <option value="major" className="bg-[#121418] text-neutral-200">maj</option>
+              <option value="minor" className="bg-[#121418] text-neutral-200">min</option>
+              <option value="dorian" className="bg-[#121418] text-neutral-200">dor</option>
+              <option value="phrygian" className="bg-[#121418] text-neutral-200">phr</option>
+              <option value="harmonic_minor" className="bg-[#121418] text-neutral-200">harm</option>
+            </select>
+            {dawKeyDetected && (
+              <span className="text-[8px] font-mono font-bold uppercase px-1 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                HOST
+              </span>
+            )}
+            {dawHostBpm !== null && (
+              <span className="text-xs font-mono font-bold text-emerald-400/90 tracking-wide">
+                · {dawHostBpm} BPM
+              </span>
+            )}
             <button
               onClick={syncToProjectKey}
               className="hardware-button px-2 py-0.5 text-[9.5px] font-mono font-bold text-emerald-400 rounded transition uppercase"
-              title="Sync playback & active scale to host DAW project key"
+              title="Sync active key/transpose, BPM, and meter to Project Key & host DAW"
             >
               Sync
             </button>
@@ -2043,6 +2482,20 @@ export const PluginSimulator: React.FC = () => {
 
         {/* Right: PROMINENT MODULE TOGGLE SWITCHES - HIGH VISIBILITY */}
         <div className="flex items-center gap-2 shrink-0">
+          {/* Mechanical Rocker Switch: Rule-Based Generator */}
+          <button
+            onClick={() => setShowGeneratorPanel(!showGeneratorPanel)}
+            className={`flex items-center gap-1.5 px-3 py-1 text-xs font-mono font-bold rounded transition border ${
+              showGeneratorPanel
+                ? 'bg-emerald-900/60 text-emerald-200 border-emerald-400 shadow-[0_0_8px_rgba(16,185,129,0.5)]'
+                : 'hardware-button text-emerald-300'
+            }`}
+            title="Toggle Rule-Based MIDI Generator (Melody, Riff, Bass Line, Chords)"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-emerald-300" />
+            <span className="uppercase text-[10.5px] tracking-wider">GENERATE</span>
+          </button>
+
           {/* Mechanical Rocker Switch: Humanise */}
           <button
             onClick={() => setShowHumanizeModal(!showHumanizeModal)}
@@ -2075,47 +2528,166 @@ export const PluginSimulator: React.FC = () => {
         </div>
       </div>
 
-      {/* Humanize Dropdown Banner (Collapsible) */}
-      <div
-        className={`grid transition-all duration-300 ease-in-out bg-[#14161a] ${
-          showHumanizeModal
-            ? 'grid-rows-[1fr] opacity-100 py-3 border-b-2 border-black/90 shadow-inner'
-            : 'grid-rows-[0fr] opacity-0 py-0 pointer-events-none'
-        }`}
-      >
-        <div className="overflow-hidden">
-          <div className="px-5 flex flex-wrap items-center justify-between gap-4 text-xs font-mono">
-            <div className="flex flex-wrap items-center gap-4">
+      {/* Rule-Based MIDI Generator Rack Panel (Selectable: Melody, Riff, Bass Line, Chords) */}
+      {showGeneratorPanel && (
+        <div className="shrink-0 bg-[#121518] py-2 px-4 border-b-2 border-black/90 shadow-inner">
+          <div className="flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
+            {/* Left: Pattern Type Selector */}
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <span className="silkscreen-label text-emerald-400 font-bold">GENERATOR:</span>
+              <div className="flex items-center gap-1 bg-[#0c0e10] p-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.85)]">
+                {(
+                  [
+                    { id: 'melody', label: 'Melody', hint: 'Conjunct contour, chord-tone anchors & cadential resolution' },
+                    { id: 'riff', label: 'Riff', hint: 'Syncopated ostinato hook & bar-4 turnaround' },
+                    { id: 'bass', label: 'Bass Line', hint: 'Root/5th lock, octave bounce & diatonic approach fills' },
+                    { id: 'chords', label: 'Chords', hint: 'Diatonic progressions with smooth voice-leading' },
+                  ] as const
+                ).map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setGeneratorType(item.id)}
+                    title={item.hint}
+                    className={`px-2.5 py-1 rounded text-[10.5px] font-bold uppercase tracking-wider transition ${
+                      generatorType === item.id
+                        ? 'bg-emerald-500 text-black font-extrabold shadow-[0_0_8px_rgba(16,185,129,0.65)]'
+                        : 'text-neutral-300 hover:text-white hover:bg-neutral-800'
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Bar Length Selector */}
+              <div className="flex items-center gap-1 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.85)]">
+                <span className="silkscreen-label text-neutral-500 mr-1">LEN:</span>
+                {([2, 4, 8] as const).map((b) => (
+                  <button
+                    key={b}
+                    type="button"
+                    onClick={() => setGeneratorBars(b)}
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition ${
+                      generatorBars === b
+                        ? 'bg-amber-500 text-black font-extrabold'
+                        : 'text-neutral-400 hover:text-white'
+                    }`}
+                  >
+                    {b}B
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Right: Locked Notes Badge + Active Key Source Readout + Generate Action */}
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {sequence.notes.some((n) => n.locked) && (
+                <div
+                  className="flex items-center gap-1 px-2 py-1 rounded border border-sky-500/60 bg-sky-950/50 text-sky-300 font-bold text-[10.5px]"
+                  title="Locked notes (cyan padlock on Piano Roll) are preserved when generating new patterns. Right-click notes to Lock/Unlock."
+                >
+                  <Lock className="w-3 h-3 text-sky-400" />
+                  <span>{sequence.notes.filter((n) => n.locked).length} Locked</span>
+                </div>
+              )}
+
+              <div
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded border bg-[#0c0e10] shadow-[inset_0_2px_4px_rgba(0,0,0,0.85)] ${
+                  isConnectedToDaw ? 'border-emerald-600/60' : 'border-amber-600/50'
+                }`}
+                title={
+                  dawKeyDetected
+                    ? 'Project Key received from host MIDI Key Signature meta-event'
+                    : isConnectedToDaw
+                    ? 'Using Project Key set in the PROJECT strip (AU hosts like Logic Pro do not broadcast global Key Signature)'
+                    : 'Using active App Key (SCALE selector)'
+                }
+              >
+                <span className="silkscreen-label text-neutral-500">
+                  {dawKeyDetected ? 'DAW PROJECT KEY:' : isConnectedToDaw ? 'PROJECT KEY:' : 'APP KEY:'}
+                </span>
+                <span
+                  className={`font-bold text-[11px] ${
+                    isConnectedToDaw ? 'text-emerald-400 phosphor-glow-green' : 'text-amber-400 phosphor-glow-amber'
+                  }`}
+                >
+                  {getNoteName(effectiveGenRoot)}{' '}
+                  {SCALE_DEFINITIONS[effectiveGenScale]?.name || effectiveGenScale}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleGeneratePattern()}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-b from-emerald-400 to-emerald-600 hover:from-emerald-300 hover:to-emerald-500 text-black font-extrabold rounded border border-emerald-200/60 shadow-[0_0_12px_rgba(16,185,129,0.45)] active:translate-y-0.5 transition uppercase text-[10.5px] tracking-wider"
+                title={`Generate new ${generatorType} strictly in ${getNoteName(effectiveGenRoot)} ${SCALE_DEFINITIONS[effectiveGenScale]?.name || effectiveGenScale}`}
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>
+                  Generate{' '}
+                  {generatorType === 'bass'
+                    ? 'Bass Line'
+                    : generatorType.charAt(0).toUpperCase() + generatorType.slice(1)}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowGeneratorPanel(false)}
+                className="text-neutral-400 hover:text-white p-1 rounded transition"
+                title="Close Generator panel"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Humanise & Dynamics Rack Panel (Collapsible, never squashed) */}
+      {showHumanizeModal && (
+        <div className="shrink-0 bg-[#14161a] py-2 px-4 border-b-2 border-black/90 shadow-inner">
+          <div className="flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
+            <div className="flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-2">
-                <span className="text-neutral-400">Velocity Jitter:</span>
-                <span className="text-amber-400 font-bold">&plusmn;{humanizeVelRange}</span>
+                <span className="silkscreen-label text-purple-300 font-bold">
+                  HUMANISE:
+                </span>
+                <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-neutral-900 border border-neutral-700 text-neutral-300">
+                  {selectedNoteIds.size > 0 ? `${selectedNoteIds.size} Selected` : `All (${sequence.notes.length})`}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+                <span className="text-neutral-400">Vel Jitter:</span>
+                <span className="text-amber-400 font-bold min-w-[28px]">&plusmn;{humanizeVelRange}</span>
                 <input
                   type="range"
-                  min={2}
+                  min={1}
                   max={40}
                   value={humanizeVelRange}
                   onChange={(e) => setHumanizeVelRange(Number(e.target.value))}
-                  className="w-24 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-amber-500"
+                  className="w-24 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-amber-500 shrink-0"
                 />
                 <button
                   onClick={applyHumanizeVelocity}
-                  className="hardware-button px-2.5 py-1 text-amber-400 font-bold rounded transition uppercase text-[10px]"
+                  className="px-2.5 py-1 bg-gradient-to-b from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-extrabold rounded transition uppercase text-[10px] shadow border border-amber-300/50"
+                  title="Apply random ±Jitter velocity humanisation"
                 >
-                  Apply Jitter
+                  Humanise Vel
                 </button>
               </div>
 
-              <div className="w-px h-6 bg-neutral-800" />
-
-              <div className="flex items-center gap-2">
-                <span className="text-neutral-400">Custom Range:</span>
+              <div className="flex items-center gap-2 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+                <span className="text-neutral-400">Random:</span>
                 <input
                   type="number"
                   min={1}
                   max={127}
                   value={randomMinVel}
                   onChange={(e) => setRandomMinVel(Number(e.target.value))}
-                  className="w-12 px-1.5 py-0.5 bg-[#0c0e10] border border-neutral-700 rounded text-center text-neutral-200"
+                  className="w-11 px-1 py-0.5 bg-[#14161a] border border-neutral-700 rounded text-center text-neutral-200"
                 />
                 <span className="text-neutral-500">to</span>
                 <input
@@ -2124,35 +2696,38 @@ export const PluginSimulator: React.FC = () => {
                   max={127}
                   value={randomMaxVel}
                   onChange={(e) => setRandomMaxVel(Number(e.target.value))}
-                  className="w-12 px-1.5 py-0.5 bg-[#0c0e10] border border-neutral-700 rounded text-center text-neutral-200"
+                  className="w-11 px-1 py-0.5 bg-[#14161a] border border-neutral-700 rounded text-center text-neutral-200"
                 />
                 <button
                   onClick={applyRandomizeVelocityRange}
                   className="hardware-button px-2.5 py-1 text-purple-300 font-bold rounded transition uppercase text-[10px]"
                 >
-                  Randomize
+                  Randomise
                 </button>
               </div>
 
-              <div className="w-px h-6 bg-neutral-800" />
-
               <button
                 onClick={applyHumanizeTiming}
-                className="hardware-button px-2.5 py-1 text-neutral-200 font-bold rounded transition uppercase text-[10px]"
+                className="hardware-button px-2.5 py-1 text-emerald-300 font-bold rounded transition uppercase text-[10px]"
+                title="Apply subtle ±12ms micro-timing drift"
               >
                 Humanise Timing
               </button>
             </div>
 
-            <button onClick={() => setShowHumanizeModal(false)} className="text-neutral-400 hover:text-white p-1">
+            <button
+              onClick={() => setShowHumanizeModal(false)}
+              className="text-neutral-400 hover:text-white p-1 rounded transition"
+              title="Close Humanise panel"
+            >
               <X className="w-4 h-4" />
             </button>
           </div>
         </div>
-      </div>
+      )}
 
-      {/* 1. Main Piano Roll Canvas Container - Immediately below Key Information */}
-      <div className="flex-1 w-full min-h-[380px] p-2 bg-[#0a0c0e] border-b-2 border-black/80 shadow-[inset_0_4px_12px_rgba(0,0,0,0.95)]">
+      {/* 1. Main Piano Roll Canvas Container - Flexibly adapts without squashing Rack Bays */}
+      <div className="flex-1 flex flex-col w-full min-h-[240px] overflow-hidden p-2 bg-[#0a0c0e] border-b-2 border-black/80 shadow-[inset_0_4px_12px_rgba(0,0,0,0.95)]">
         <PianoRoll
           notes={sequence.notes}
           totalLengthPpq={sequence.totalLengthPpq}
@@ -2178,7 +2753,7 @@ export const PluginSimulator: React.FC = () => {
       </div>
 
       {/* 2. Velocity Heatmap, Transpose, Diatonic Harmonise & Speed Controls Strip - Below Piano Roll */}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 bg-[#16181b] border-t border-b border-black/80 shadow-[0_2px_6px_rgba(0,0,0,0.7)] text-xs font-mono overflow-x-auto no-scrollbar">
+      <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 px-4 py-2 bg-[#16181b] border-t border-b border-black/80 shadow-[0_2px_6px_rgba(0,0,0,0.7)] text-xs font-mono overflow-x-auto no-scrollbar">
         {/* Left: Bottom-Left Rack Screw + Recessed Velocity Heatmap Well */}
         <div className="flex items-center gap-2.5 shrink-0">
           {/* Bottom-Left Flush Allen Rack Screw */}
@@ -2294,7 +2869,7 @@ export const PluginSimulator: React.FC = () => {
               step={1}
               value={params.transpose}
               onChange={(e) => setParams((p) => ({ ...p, transpose: Number(e.target.value) }))}
-              className="w-20 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-amber-500"
+              className="w-20 min-w-[80px] h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-amber-500 shrink-0"
             />
             <span className="font-bold text-amber-400 phosphor-glow-amber text-xs min-w-[32px] font-mono">
               {params.transpose >= 0 ? `+${params.transpose}` : params.transpose} st
@@ -2398,15 +2973,9 @@ export const PluginSimulator: React.FC = () => {
         </div>
       </div>
 
-      {/* 3. Arpeggiator Control Module Rack Bay (Collapsible with smooth grid transition) */}
-      <div
-        className={`grid transition-all duration-300 ease-in-out bg-[#121417] ${
-          showArpPanel
-            ? 'grid-rows-[1fr] opacity-100 py-2.5 border-t-2 border-b-2 border-black/90 shadow-[inset_0_3px_8px_rgba(0,0,0,0.9)]'
-            : 'grid-rows-[0fr] opacity-0 py-0 border-t-0 border-b-0 pointer-events-none'
-        }`}
-      >
-        <div className="overflow-hidden">
+      {/* 3. Arpeggiator Control Module Rack Bay (Renders at full un-squashed size) */}
+      {showArpPanel && (
+        <div className="shrink-0 bg-[#121417] py-2 border-t-2 border-b-2 border-black/90 shadow-[inset_0_3px_8px_rgba(0,0,0,0.9)]">
           <div className="px-3">
             {/* Rack Bay Header Badge */}
             <div className="flex items-center justify-between px-3 py-1 bg-[#0c0e10] border border-neutral-800 rounded-t text-[10px] font-mono mb-1.5">
@@ -2423,7 +2992,7 @@ export const PluginSimulator: React.FC = () => {
             />
           </div>
         </div>
-      </div>
+      )}
 
       {/* Preset Drawer Modal */}
       <PresetDrawer
@@ -2515,18 +3084,25 @@ export const PluginSimulator: React.FC = () => {
         isOpen={showFolderModal}
         onClose={() => setShowFolderModal(false)}
         scannedFiles={scannedFiles}
+        savedFolderPaths={savedFolderPaths}
         onSelectFile={(scannedItem, originalIndex) => {
           setCurrentScannedFileIdx(originalIndex);
           setActiveSourceType('scanned');
           pushHistorySnapshot(`Load ${scannedItem.name}`);
-          loadScannedItem(scannedItem, originalIndex);
           setShowFolderModal(false);
-          setNotificationBanner(`✓ Loaded "${scannedItem.name}" into piano roll`);
-          setTimeout(() => setNotificationBanner(null), 3500);
+          loadScannedItem(scannedItem, originalIndex);
         }}
         activeFileIndex={activeSourceType === 'scanned' ? currentScannedFileIdx : -1}
         onScanFolderClick={handleScanFolderClick}
-        isScanning={isScanning}
+        onRescanFolders={isJuceNative() ? handleRescanSavedFolders : undefined}
+        onClearLibrary={() => {
+          setScannedFiles([]);
+          setSavedFolderPaths([]);
+          setCurrentScannedFileIdx(-1);
+          if (activeSourceType === 'scanned') setActiveSourceType('preset');
+          if (isJuceNative()) emitToJuce('clearScannedLibrary', {});
+        }}
+        isScanning={isScanning || isRescanning}
       />
     </div>
   );

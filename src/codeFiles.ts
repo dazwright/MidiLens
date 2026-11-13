@@ -19,6 +19,8 @@ import installLocalAuSh from '../juce_source/install_local_au.sh?raw';
 import installAuCommand from '../juce_source/install_au.command?raw';
 import arpEngineH from '../juce_source/Source/ArpEngine.h?raw';
 import midiLensLookAndFeelH from '../juce_source/Source/MidiLensLookAndFeel.h?raw';
+import cloudFileReaderH from '../juce_source/Source/CloudFileReader.h?raw';
+import cloudFileReaderMm from '../juce_source/Source/CloudFileReader.mm?raw';
 
 // Pre-compiled Offline JUCE 8 WebUI Assets (Embedded into BinaryData via CMake)
 import webUiIndexHtml from '../juce_source/WebUI/index.html?raw';
@@ -194,6 +196,22 @@ export const JUCE_CODE_FILES: CodeFileEntry[] = [
     category: 'Export / I/O',
     description: 'Implementation of MIDI file serialization with tempo events, velocity scaling, and note transposition.',
     content: exporterCpp,
+  },
+  {
+    filename: 'CloudFileReader.h',
+    path: 'Source/CloudFileReader.h',
+    language: 'cpp',
+    category: 'Export / I/O',
+    description: 'Cross-platform header for on-demand cloud-hydrated MIDI file reading.',
+    content: cloudFileReaderH,
+  },
+  {
+    filename: 'CloudFileReader.mm',
+    path: 'Source/CloudFileReader.mm',
+    language: 'cpp',
+    category: 'Export / I/O',
+    description: 'macOS Objective-C++ NSFileCoordinator & File Provider hydration reader for Google Drive / iCloud Drive online-only MIDI files.',
+    content: cloudFileReaderMm,
   },
   {
     filename: 'README.md',

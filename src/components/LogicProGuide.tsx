@@ -290,7 +290,7 @@ codesign --force --deep --sign - \\
             </div>
             <button
               onClick={() =>
-                copyCommand('step4', `killall -9 AudioComponentRegistrar\nauval -v aumf MPrv Adsp`)
+                copyCommand('step4', `killall -9 AudioComponentRegistrar\nauval -v aumf MPrv DazC`)
               }
               className="text-xs font-mono text-zinc-400 hover:text-white flex items-center gap-1"
             >
@@ -304,7 +304,7 @@ codesign --force --deep --sign - \\
           <div className="p-3 bg-zinc-950 font-mono text-xs rounded-lg border border-zinc-800 text-amber-300 overflow-x-auto">
             <pre>
 {`killall -9 AudioComponentRegistrar
-auval -v aumf MPrv Adsp`}
+auval -v aumf MPrv DazC`}
             </pre>
           </div>
         </div>

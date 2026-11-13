@@ -20,15 +20,19 @@ import {
   Check,
   Info,
   Plus,
+  RefreshCw,
 } from 'lucide-react';
 
 interface LibraryModalProps {
   isOpen: boolean;
   onClose: () => void;
   scannedFiles: ScannedMidiFile[];
+  savedFolderPaths?: string[];
   onSelectFile: (file: ScannedMidiFile, originalIndex: number) => void;
   activeFileIndex: number;
   onScanFolderClick: () => void;
+  onRescanFolders?: () => void;
+  onClearLibrary?: () => void;
   isScanning: boolean;
 }
 
@@ -66,9 +70,12 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
   isOpen,
   onClose,
   scannedFiles,
+  savedFolderPaths = [],
   onSelectFile,
   activeFileIndex,
   onScanFolderClick,
+  onRescanFolders,
+  onClearLibrary,
   isScanning,
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>('explorer');
@@ -78,8 +85,16 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
   const [sortOption, setSortOption] = useState<SortOption>('name-asc');
   const [visibleCount, setVisibleCount] = useState(60);
 
-  // Group files into folder dictionary
+  // Group files into folder dictionary (only computed when modal is open so startup/streaming stays instant)
   const { folderMap, folderList, categoryMap, categoryList } = useMemo(() => {
+    if (!isOpen) {
+      return {
+        folderMap: {} as Record<string, { folderPath: string; folderName: string; fileIndexes: number[] }>,
+        folderList: [] as { folderPath: string; folderName: string; fileIndexes: number[] }[],
+        categoryMap: {} as Record<string, number[]>,
+        categoryList: [] as string[],
+      };
+    }
     const fMap: Record<string, { folderPath: string; folderName: string; fileIndexes: number[] }> = {};
     const cMap: Record<string, number[]> = {
       'Bass': [],
@@ -111,10 +126,11 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     const cList = Object.keys(cMap).filter((cat) => cMap[cat].length > 0);
 
     return { folderMap: fMap, folderList: fList, categoryMap: cMap, categoryList: cList };
-  }, [scannedFiles]);
+  }, [isOpen, scannedFiles]);
 
   // Filtered & Sorted File Items
   const processedFiles = useMemo(() => {
+    if (!isOpen) return [];
     let items = scannedFiles.map((file, originalIndex) => ({
       file,
       originalIndex,
@@ -163,7 +179,7 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     });
 
     return items;
-  }, [scannedFiles, searchQuery, selectedFolder, selectedCategory, sortOption, viewMode]);
+  }, [isOpen, scannedFiles, searchQuery, selectedFolder, selectedCategory, sortOption, viewMode]);
 
   if (!isOpen) return null;
 
@@ -192,7 +208,9 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
                 </span>
               </h3>
               <p className="text-[11px] text-slate-400 font-mono">
-                Organised by folder directory, subpack hierarchy and musical categories
+                {savedFolderPaths.length > 0
+                  ? `${savedFolderPaths.length} remembered folder${savedFolderPaths.length > 1 ? 's' : ''} · Organised by directory & category`
+                  : 'Organised by folder directory, subpack hierarchy and musical categories'}
               </p>
             </div>
           </div>
@@ -207,6 +225,26 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
               <Plus className="w-3.5 h-3.5 text-amber-400" />
               <span>Add Folder</span>
             </button>
+            {onRescanFolders && savedFolderPaths.length > 0 && (
+              <button
+                onClick={onRescanFolders}
+                disabled={isScanning}
+                className="hardware-button flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-emerald-300 hover:text-emerald-200 disabled:opacity-40 rounded-xl font-mono uppercase tracking-wider transition shrink-0"
+                title="Re-check remembered folders for newly added MIDI files"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isScanning ? 'animate-spin' : ''}`} />
+                <span>Rescan</span>
+              </button>
+            )}
+            {onClearLibrary && scannedFiles.length > 0 && (
+              <button
+                onClick={onClearLibrary}
+                className="px-2.5 py-1.5 text-[11px] text-neutral-400 hover:text-rose-300 bg-neutral-900/70 hover:bg-rose-950/40 border border-slate-700/80 rounded-xl font-mono uppercase tracking-wider transition shrink-0"
+                title="Clear all remembered folders and scanned files from library"
+              >
+                Clear
+              </button>
+            )}
             <button
               onClick={onClose}
               className="text-slate-400 hover:text-white p-1.5 hover:bg-slate-800 rounded-lg transition"

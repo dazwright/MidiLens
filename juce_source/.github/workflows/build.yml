@@ -42,7 +42,7 @@ jobs:
           cp -R "build/MidiPreviewer_artefacts/Release/AU/MidiLens.component" pkg_root/Library/Audio/Plug-Ins/Components/
           cp -R "build/MidiPreviewer_artefacts/Release/VST3/MidiLens.vst3" pkg_root/Library/Audio/Plug-Ins/VST3/
           pkgbuild --root pkg_root \
-                   --identifier com.audiodsp.midilens.pkg \
+                   --identifier com.dazcorp.midilens.pkg \
                    --version 1.0.0 \
                    --install-location / \
                    MidiLens-macOS-Universal.pkg

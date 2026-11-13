@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "CloudFileReader.h"
 #include <WebUIData.h>
 #include <algorithm>
 #include <cmath>
@@ -26,12 +27,30 @@ namespace
         return v;
     }
 
-    juce::String loadFileToBase64(const juce::File& file)
+    juce::String loadFileToBase64(const juce::File& file, int cloudTimeoutMs, juce::String& outError)
     {
-        juce::MemoryBlock mb;
-        if (!file.existsAsFile() || !file.loadFileAsData(mb) || mb.getSize() == 0)
+       #if defined(__APPLE__)
+        auto res = readFileWithCloudHydration(file, cloudTimeoutMs);
+        if (res.success && !res.bytes.empty())
+            return juce::Base64::toBase64(res.bytes.data(), res.bytes.size());
+
+        outError = res.errorMessage;
+        return {};
+       #else
+        juce::ignoreUnused(cloudTimeoutMs);
+        if (!file.existsAsFile())
+        {
+            outError = "File not found or folder permission was denied by the host.";
             return {};
+        }
+        juce::MemoryBlock mb;
+        if (!file.loadFileAsData(mb) || mb.getSize() == 0)
+        {
+            outError = "File is empty or could not be read from disk.";
+            return {};
+        }
         return juce::Base64::toBase64(mb.getData(), mb.getSize());
+       #endif
     }
 } // namespace
 
@@ -56,7 +75,9 @@ MidiPreviewerAudioProcessorEditor::MidiPreviewerAudioProcessorEditor(MidiPreview
         .withEventListener("nativeLoadFile", [this](juce::var payload) { handleNativeLoadFile(payload); })
         .withEventListener("nativeSaveMidi", [this](juce::var payload) { handleNativeSaveMidi(payload); })
         .withEventListener("nativeDragMidiToDaw", [this](juce::var payload) { handleNativeDragMidiToDaw(payload); })
-        .withEventListener("saveUiState", [this](juce::var payload) { handleSaveUiState(payload); });
+        .withEventListener("saveUiState", [this](juce::var payload) { handleSaveUiState(payload); })
+        .withEventListener("clearScannedLibrary", [this](juce::var) { handleClearScannedLibrary(); })
+        .withEventListener("rescanSavedFolders", [this](juce::var) { handleRescanSavedFolders(); });
 
     webBrowser = std::make_unique<juce::WebBrowserComponent>(options);
     addAndMakeVisible(*webBrowser);
@@ -73,6 +94,8 @@ MidiPreviewerAudioProcessorEditor::~MidiPreviewerAudioProcessorEditor()
 {
     stopTimer();
     isFrontendReady = false;
+    if (libraryStreamCancelFlag != nullptr)
+        libraryStreamCancelFlag->store(true, std::memory_order_relaxed);
     activeFileChooser.reset();
     webBrowser.reset();
 }
@@ -129,29 +152,33 @@ void MidiPreviewerAudioProcessorEditor::handleFrontendReady()
 {
     isFrontendReady = true;
 
+    // Immediately restore UI sequence/params & known folder list without touching disk or walking folders
     const juce::String savedJson = audioProcessor.getSavedUiStateJson();
-    const auto scanned = audioProcessor.getScannedFiles();
+    const auto folders = audioProcessor.getScannedFolders();
 
-    if (savedJson.isNotEmpty() || !scanned.empty())
+    if (savedJson.isNotEmpty() || !folders.empty())
     {
         juce::DynamicObject::Ptr obj = new juce::DynamicObject();
         obj->setProperty("stateJson", savedJson);
 
-        juce::Array<juce::var> filesArr;
-        for (const auto& item : scanned)
-        {
-            juce::DynamicObject::Ptr fObj = new juce::DynamicObject();
-            fObj->setProperty("name", item.name);
-            fObj->setProperty("relativePath", item.relativePath);
-            fObj->setProperty("fullPath", item.fullPath);
-            fObj->setProperty("sizeBytes", static_cast<juce::int64>(item.sizeBytes));
-            filesArr.add(juce::var(fObj.get()));
-        }
-        obj->setProperty("scannedFiles", filesArr);
+        juce::Array<juce::var> foldersArr;
+        for (const auto& folderPath : folders)
+            foldersArr.add(folderPath);
+        obj->setProperty("scannedFolders", foldersArr);
 
         if (webBrowser != nullptr)
             webBrowser->emitEventIfBrowserIsVisible("restorePluginState", juce::var(obj.get()));
     }
+
+    // Load cached global library asynchronously in background (or instant memory hit) & stream in chunks
+    auto safeThis = juce::Component::SafePointer<MidiPreviewerAudioProcessorEditor>(this);
+    audioProcessor.loadGlobalLibraryAsync([safeThis]()
+    {
+        if (safeThis == nullptr || !safeThis->isFrontendReady || safeThis->webBrowser == nullptr)
+            return;
+
+        safeThis->streamLibraryToWebView(false);
+    });
 }
 
 void MidiPreviewerAudioProcessorEditor::handleSyncSequence(const juce::var& rawPayload)
@@ -303,36 +330,28 @@ void MidiPreviewerAudioProcessorEditor::scanDirectoriesAsync(const juce::Array<j
     auto safeThis = juce::Component::SafePointer<MidiPreviewerAudioProcessorEditor>(this);
     juce::Thread::launch([safeThis, directories]()
     {
-        juce::Array<juce::File> allMidiFiles;
+        std::vector<juce::String> scannedDirPaths;
+        std::vector<ScannedFileMetadata> metadataList;
+
         for (const auto& dir : directories)
         {
             if (dir.isDirectory())
             {
+                scannedDirPaths.push_back(dir.getFullPathName());
+                const juce::File scanBase = dir.getParentDirectory().exists() ? dir.getParentDirectory() : dir;
                 auto subFiles = MidiPreviewerAudioProcessor::scanFolderForMidiFiles(dir, true);
-                allMidiFiles.addArray(subFiles);
+                metadataList.reserve(metadataList.size() + static_cast<size_t>(subFiles.size()));
+
+                for (const auto& f : subFiles)
+                {
+                    ScannedFileMetadata meta;
+                    meta.name = f.getFileName();
+                    meta.relativePath = f.getRelativePathFrom(scanBase).replaceCharacter('\\', '/');
+                    meta.fullPath = f.getFullPathName();
+                    meta.sizeBytes = f.getSize();
+                    metadataList.push_back(std::move(meta));
+                }
             }
-        }
-
-        std::vector<ScannedFileMetadata> metadataList;
-        metadataList.reserve(static_cast<size_t>(allMidiFiles.size()));
-
-        for (const auto& f : allMidiFiles)
-        {
-            const juce::File parentRoot = f.getParentDirectory();
-            ScannedFileMetadata meta;
-            meta.name = f.getFileName();
-            meta.relativePath = f.getRelativePathFrom(parentRoot).replaceCharacter('\\', '/');
-            meta.fullPath = f.getFullPathName();
-            meta.sizeBytes = f.getSize();
-            metadataList.push_back(std::move(meta));
-        }
-
-        juce::String firstBase64;
-        juce::String firstName;
-        if (!allMidiFiles.isEmpty())
-        {
-            firstName = allMidiFiles[0].getFileName();
-            firstBase64 = loadFileToBase64(allMidiFiles[0]);
         }
 
         juce::String labelName = directories.size() == 1
@@ -341,56 +360,215 @@ void MidiPreviewerAudioProcessorEditor::scanDirectoriesAsync(const juce::Array<j
 
         juce::MessageManager::callAsync([safeThis,
                                          folderName = labelName,
-                                         metadataList = std::move(metadataList),
-                                         firstBase64,
-                                         firstName]()
+                                         scannedDirPaths = std::move(scannedDirPaths),
+                                         metadataList = std::move(metadataList)]()
         {
             if (safeThis == nullptr)
                 return;
 
+            if (!scannedDirPaths.empty())
+                safeThis->audioProcessor.appendScannedFolders(scannedDirPaths);
+
             if (!metadataList.empty())
                 safeThis->audioProcessor.appendScannedFiles(metadataList);
+
+            const auto totalAdded = metadataList.size();
+            const bool useChunkedStream = totalAdded > 1000;
 
             juce::DynamicObject::Ptr obj = new juce::DynamicObject();
             obj->setProperty("folderName", folderName);
             obj->setProperty("canceled", false);
+            obj->setProperty("addedCount", static_cast<juce::int64>(totalAdded));
+            obj->setProperty("streamed", useChunkedStream);
 
             juce::Array<juce::var> arr;
-            for (const auto& item : metadataList)
+            if (!useChunkedStream)
             {
+                arr.ensureStorageAllocated(static_cast<int>(totalAdded));
+                for (const auto& item : metadataList)
+                {
+                    juce::DynamicObject::Ptr fObj = new juce::DynamicObject();
+                    fObj->setProperty("name", item.name);
+                    fObj->setProperty("relativePath", item.relativePath);
+                    fObj->setProperty("fullPath", item.fullPath);
+                    fObj->setProperty("sizeBytes", static_cast<juce::int64>(item.sizeBytes));
+                    arr.add(juce::var(fObj.get()));
+                }
+            }
+            obj->setProperty("files", arr);
+
+            juce::Array<juce::var> foldersArr;
+            for (const auto& folderPath : safeThis->audioProcessor.getScannedFolders())
+                foldersArr.add(folderPath);
+            obj->setProperty("scannedFolders", foldersArr);
+
+            if (safeThis->webBrowser != nullptr && safeThis->isFrontendReady)
+                safeThis->webBrowser->emitEventIfBrowserIsVisible("libraryScanned", juce::var(obj.get()));
+
+            if (useChunkedStream && safeThis->isFrontendReady)
+                safeThis->streamLibraryToWebView(false);
+        });
+    });
+}
+
+void MidiPreviewerAudioProcessorEditor::streamLibraryToWebView(bool fromRescan)
+{
+    if (libraryStreamCancelFlag != nullptr)
+        libraryStreamCancelFlag->store(true, std::memory_order_relaxed);
+
+    auto cancelFlag = std::make_shared<std::atomic<bool>>(false);
+    libraryStreamCancelFlag = cancelFlag;
+
+    struct StreamPayload
+    {
+        std::vector<juce::String> folders;
+        std::vector<ScannedFileMetadata> files;
+        bool fromRescan { false };
+    };
+
+    auto payloadData = std::make_shared<StreamPayload>();
+    payloadData->folders = audioProcessor.getScannedFolders();
+    payloadData->files = audioProcessor.getScannedFiles();
+    payloadData->fromRescan = fromRescan;
+
+    if (payloadData->files.empty() && payloadData->folders.empty() && !fromRescan)
+        return;
+
+    auto safeThis = juce::Component::SafePointer<MidiPreviewerAudioProcessorEditor>(this);
+    constexpr size_t chunkSize = 800;
+
+    auto sendNextChunk = std::make_shared<std::function<void(size_t)>>();
+    *sendNextChunk = [safeThis, cancelFlag, payloadData, sendNextChunk, chunkSize](size_t offset)
+    {
+        if (cancelFlag->load(std::memory_order_relaxed)
+            || safeThis == nullptr
+            || !safeThis->isFrontendReady
+            || safeThis->webBrowser == nullptr)
+        {
+            return;
+        }
+
+        const size_t total = payloadData->files.size();
+        const size_t end = std::min(offset + chunkSize, total);
+        const bool isFirst = (offset == 0);
+        const bool isLast = (end >= total);
+
+        juce::DynamicObject::Ptr obj = new juce::DynamicObject();
+        obj->setProperty("reset", isFirst);
+        obj->setProperty("done", isLast);
+        obj->setProperty("fromRescan", payloadData->fromRescan);
+        obj->setProperty("totalCount", static_cast<juce::int64>(total));
+
+        if (isFirst)
+        {
+            juce::Array<juce::var> foldersArr;
+            for (const auto& folderPath : payloadData->folders)
+                foldersArr.add(folderPath);
+            obj->setProperty("scannedFolders", foldersArr);
+        }
+
+        juce::Array<juce::var> filesArr;
+        if (end > offset)
+        {
+            filesArr.ensureStorageAllocated(static_cast<int>(end - offset));
+            for (size_t i = offset; i < end; ++i)
+            {
+                const auto& item = payloadData->files[i];
                 juce::DynamicObject::Ptr fObj = new juce::DynamicObject();
                 fObj->setProperty("name", item.name);
                 fObj->setProperty("relativePath", item.relativePath);
                 fObj->setProperty("fullPath", item.fullPath);
                 fObj->setProperty("sizeBytes", static_cast<juce::int64>(item.sizeBytes));
-                arr.add(juce::var(fObj.get()));
+                filesArr.add(juce::var(fObj.get()));
             }
-            obj->setProperty("files", arr);
+        }
+        obj->setProperty("files", filesArr);
 
-            if (firstBase64.isNotEmpty())
+        safeThis->webBrowser->emitEventIfBrowserIsVisible("libraryChunk", juce::var(obj.get()));
+
+        if (!isLast)
+        {
+            juce::Timer::callAfterDelay(4, [sendNextChunk, end]()
             {
-                obj->setProperty("firstFileName", firstName);
-                obj->setProperty("firstFileBase64", firstBase64);
-            }
+                (*sendNextChunk)(end);
+            });
+        }
+    };
 
-            if (safeThis->webBrowser != nullptr && safeThis->isFrontendReady)
-                safeThis->webBrowser->emitEventIfBrowserIsVisible("libraryScanned", juce::var(obj.get()));
+    (*sendNextChunk)(0);
+}
+
+void MidiPreviewerAudioProcessorEditor::refreshSavedFoldersAsync(const std::vector<juce::String>& folderPaths)
+{
+    auto safeThis = juce::Component::SafePointer<MidiPreviewerAudioProcessorEditor>(this);
+    juce::Thread::launch([safeThis, folderPaths]()
+    {
+        std::vector<ScannedFileMetadata> metadataList;
+        for (const auto& path : folderPaths)
+        {
+            juce::File dir(path);
+            if (!dir.isDirectory())
+                continue;
+
+            const juce::File scanBase = dir.getParentDirectory().exists() ? dir.getParentDirectory() : dir;
+            auto subFiles = MidiPreviewerAudioProcessor::scanFolderForMidiFiles(dir, true);
+            metadataList.reserve(metadataList.size() + static_cast<size_t>(subFiles.size()));
+
+            for (const auto& f : subFiles)
+            {
+                ScannedFileMetadata meta;
+                meta.name = f.getFileName();
+                meta.relativePath = f.getRelativePathFrom(scanBase).replaceCharacter('\\', '/');
+                meta.fullPath = f.getFullPathName();
+                meta.sizeBytes = f.getSize();
+                metadataList.push_back(std::move(meta));
+            }
+        }
+
+        juce::MessageManager::callAsync([safeThis, metadataList = std::move(metadataList)]()
+        {
+            if (safeThis == nullptr)
+                return;
+
+            const auto previousCount = safeThis->audioProcessor.getScannedFiles().size();
+            if (!metadataList.empty())
+                safeThis->audioProcessor.appendScannedFiles(metadataList);
+            const auto updatedCount = safeThis->audioProcessor.getScannedFiles().size();
+
+            if (!safeThis->isFrontendReady || safeThis->webBrowser == nullptr)
+                return;
+
+            if (updatedCount != previousCount)
+            {
+                safeThis->streamLibraryToWebView(true);
+            }
+            else
+            {
+                juce::DynamicObject::Ptr obj = new juce::DynamicObject();
+                obj->setProperty("reset", false);
+                obj->setProperty("done", true);
+                obj->setProperty("fromRescan", true);
+                obj->setProperty("totalCount", static_cast<juce::int64>(updatedCount));
+                obj->setProperty("files", juce::Array<juce::var>());
+                safeThis->webBrowser->emitEventIfBrowserIsVisible("libraryChunk", juce::var(obj.get()));
+            }
         });
     });
 }
 
 void MidiPreviewerAudioProcessorEditor::handleNativeScanFolder()
 {
-    activeFileChooser = std::make_shared<juce::FileChooser>(
+    auto chooser = std::make_shared<juce::FileChooser>(
         "Select Folder(s) Containing MIDI Files",
         juce::File::getSpecialLocation(juce::File::userMusicDirectory));
+    activeFileChooser = chooser;
 
     auto safeThis = juce::Component::SafePointer<MidiPreviewerAudioProcessorEditor>(this);
     const int flags = juce::FileBrowserComponent::openMode
                     | juce::FileBrowserComponent::canSelectDirectories
                     | juce::FileBrowserComponent::canSelectMultipleItems;
 
-    activeFileChooser->launchAsync(flags, [safeThis](const juce::FileChooser& fc)
+    chooser->launchAsync(flags, [safeThis, chooser](const juce::FileChooser& fc)
     {
         if (safeThis == nullptr)
             return;
@@ -405,47 +583,68 @@ void MidiPreviewerAudioProcessorEditor::handleNativeScanFolder()
             return;
         }
 
+        safeThis->audioProcessor.retainFileChooser(chooser);
         safeThis->scanDirectoriesAsync(results);
     });
 }
 
 void MidiPreviewerAudioProcessorEditor::loadAndEmitSingleFile(const juce::File& midiFile, const juce::String& sourceType, int index)
 {
-    if (!midiFile.existsAsFile())
-        return;
+    auto safeThis = juce::Component::SafePointer<MidiPreviewerAudioProcessorEditor>(this);
+    juce::Thread::launch([safeThis, midiFile, sourceType, index]()
+    {
+        juce::String errMsg;
+        const juce::String base64 = loadFileToBase64(midiFile, 15000, errMsg);
 
-    const juce::String base64 = loadFileToBase64(midiFile);
-    if (base64.isEmpty() || webBrowser == nullptr || !isFrontendReady)
-        return;
+        juce::MessageManager::callAsync([safeThis, midiFile, sourceType, index, base64, errMsg]()
+        {
+            if (safeThis == nullptr || safeThis->webBrowser == nullptr || !safeThis->isFrontendReady)
+                return;
 
-    juce::DynamicObject::Ptr obj = new juce::DynamicObject();
-    obj->setProperty("name", midiFile.getFileName());
-    obj->setProperty("fullPath", midiFile.getFullPathName());
-    obj->setProperty("base64", base64);
-    obj->setProperty("sourceType", sourceType);
-    obj->setProperty("index", index);
+            if (base64.isEmpty())
+            {
+                juce::DynamicObject::Ptr errObj = new juce::DynamicObject();
+                errObj->setProperty("name", midiFile.getFileName());
+                errObj->setProperty("fullPath", midiFile.getFullPathName());
+                errObj->setProperty("error", errMsg.isNotEmpty() ? errMsg : juce::String("File is empty or could not be read from disk."));
+                safeThis->webBrowser->emitEventIfBrowserIsVisible("midiFileLoadError", juce::var(errObj.get()));
+                return;
+            }
 
-    webBrowser->emitEventIfBrowserIsVisible("midiFileLoaded", juce::var(obj.get()));
+            juce::DynamicObject::Ptr obj = new juce::DynamicObject();
+            obj->setProperty("name", midiFile.getFileName());
+            obj->setProperty("fullPath", midiFile.getFullPathName());
+            obj->setProperty("base64", base64);
+            obj->setProperty("sourceType", sourceType);
+            obj->setProperty("index", index);
+
+            safeThis->webBrowser->emitEventIfBrowserIsVisible("midiFileLoaded", juce::var(obj.get()));
+        });
+    });
 }
 
 void MidiPreviewerAudioProcessorEditor::handleNativeOpenFile()
 {
-    activeFileChooser = std::make_shared<juce::FileChooser>(
+    auto chooser = std::make_shared<juce::FileChooser>(
         "Open MIDI File",
         juce::File::getSpecialLocation(juce::File::userMusicDirectory),
         "*.mid;*.midi");
+    activeFileChooser = chooser;
 
     auto safeThis = juce::Component::SafePointer<MidiPreviewerAudioProcessorEditor>(this);
     const int flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
 
-    activeFileChooser->launchAsync(flags, [safeThis](const juce::FileChooser& fc)
+    chooser->launchAsync(flags, [safeThis, chooser](const juce::FileChooser& fc)
     {
         if (safeThis == nullptr)
             return;
 
         const juce::File chosen = fc.getResult();
         if (chosen.existsAsFile())
+        {
+            safeThis->audioProcessor.retainFileChooser(chooser);
             safeThis->loadAndEmitSingleFile(chosen, "custom", -1);
+        }
     });
 }
 
@@ -460,7 +659,16 @@ void MidiPreviewerAudioProcessorEditor::handleNativeLoadFile(const juce::var& ra
     const int index = static_cast<int>(payload.getProperty("index", -1));
 
     if (fullPath.isNotEmpty())
+    {
         loadAndEmitSingleFile(juce::File(fullPath), sourceType, index);
+    }
+    else if (webBrowser != nullptr && isFrontendReady)
+    {
+        juce::DynamicObject::Ptr errObj = new juce::DynamicObject();
+        errObj->setProperty("name", payload.getProperty("name", "MIDI File").toString());
+        errObj->setProperty("error", "Scanned item has no native file path.");
+        webBrowser->emitEventIfBrowserIsVisible("midiFileLoadError", juce::var(errObj.get()));
+    }
 }
 
 void MidiPreviewerAudioProcessorEditor::handleNativeSaveMidi(const juce::var& rawPayload)
@@ -537,13 +745,15 @@ void MidiPreviewerAudioProcessorEditor::handleNativeDragMidiToDaw(const juce::va
     if (!outFile.replaceWithData(decoded.getData(), decoded.getDataSize()))
         return;
 
-    auto safeThis = juce::Component::SafePointer<MidiPreviewerAudioProcessorEditor>(this);
-    const juce::String fullPath = outFile.getFullPathName();
-    juce::MessageManager::callAsync([safeThis, fullPath]()
+   #if defined(__APPLE__)
+    if (auto* peer = getPeer())
     {
-        if (safeThis != nullptr)
-            safeThis->performExternalDragDropOfFiles({ fullPath }, false);
-    });
+        if (startExternalMidiFileDrag(peer->getNativeHandle(), outFile))
+            return;
+    }
+   #endif
+
+    performExternalDragDropOfFiles({ outFile.getFullPathName() }, false);
 }
 
 void MidiPreviewerAudioProcessorEditor::handleSaveUiState(const juce::var& rawPayload)
@@ -555,6 +765,41 @@ void MidiPreviewerAudioProcessorEditor::handleSaveUiState(const juce::var& rawPa
     const juce::String stateJson = payload.getProperty("stateJson", "").toString();
     if (stateJson.isNotEmpty())
         audioProcessor.setSavedUiStateJson(stateJson);
+}
+
+void MidiPreviewerAudioProcessorEditor::handleClearScannedLibrary()
+{
+    if (libraryStreamCancelFlag != nullptr)
+        libraryStreamCancelFlag->store(true, std::memory_order_relaxed);
+    audioProcessor.clearGlobalLibrary();
+}
+
+void MidiPreviewerAudioProcessorEditor::handleRescanSavedFolders()
+{
+    auto safeThis = juce::Component::SafePointer<MidiPreviewerAudioProcessorEditor>(this);
+    audioProcessor.loadGlobalLibraryAsync([safeThis]()
+    {
+        if (safeThis == nullptr)
+            return;
+
+        const auto folders = safeThis->audioProcessor.getScannedFolders();
+        if (folders.empty())
+        {
+            if (safeThis->webBrowser != nullptr && safeThis->isFrontendReady)
+            {
+                juce::DynamicObject::Ptr obj = new juce::DynamicObject();
+                obj->setProperty("reset", false);
+                obj->setProperty("done", true);
+                obj->setProperty("fromRescan", true);
+                obj->setProperty("totalCount", static_cast<juce::int64>(safeThis->audioProcessor.getScannedFiles().size()));
+                obj->setProperty("files", juce::Array<juce::var>());
+                safeThis->webBrowser->emitEventIfBrowserIsVisible("libraryChunk", juce::var(obj.get()));
+            }
+            return;
+        }
+
+        safeThis->refreshSavedFoldersAsync(folders);
+    });
 }
 
 bool MidiPreviewerAudioProcessorEditor::isInterestedInFileDrag(const juce::StringArray& files)
@@ -600,12 +845,17 @@ void MidiPreviewerAudioProcessorEditor::timerCallback()
     obj->setProperty("playheadPpq", audioProcessor.getCurrentPlayheadPpq());
     obj->setProperty("isPlaying", audioProcessor.isAudioPlaying());
     obj->setProperty("hostBpm", audioProcessor.getHostBpm());
+    obj->setProperty("hostBpmDetected", audioProcessor.isHostBpmDetected());
+    obj->setProperty("hostTimeSigNumerator", audioProcessor.getHostTimeSigNumerator());
+    obj->setProperty("hostTimeSigDenominator", audioProcessor.getHostTimeSigDenominator());
+    obj->setProperty("hostTimeSigDetected", audioProcessor.isHostTimeSigDetected());
     obj->setProperty("hostIsPlaying", audioProcessor.isHostPlaying());
 
     const auto hostKey = audioProcessor.getHostKey();
     obj->setProperty("hostKeyRoot", hostKey.rootPitch);
     obj->setProperty("hostKeyIsMinor", hostKey.isMinor);
     obj->setProperty("hostKeyDetected", hostKey.isDetected);
+    obj->setProperty("isDawConnected", audioProcessor.wrapperType != juce::AudioProcessor::wrapperType_Standalone);
 
     juce::Array<juce::var> pitchArr;
     for (int p : audioProcessor.getActivePitches())

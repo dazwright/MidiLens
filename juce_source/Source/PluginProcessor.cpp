@@ -21,7 +21,11 @@ MidiPreviewerAudioProcessor::MidiPreviewerAudioProcessor()
     manualTempoParam    = apvts.getRawParameterValue(paramManualTempo);
 }
 
-MidiPreviewerAudioProcessor::~MidiPreviewerAudioProcessor() = default;
+MidiPreviewerAudioProcessor::~MidiPreviewerAudioProcessor()
+{
+    std::lock_guard<std::mutex> lock(uiStateMutex);
+    retainedFileChoosers.clear();
+}
 
 juce::AudioProcessorValueTreeState::ParameterLayout MidiPreviewerAudioProcessor::createParameterLayout()
 {
@@ -53,7 +57,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout MidiPreviewerAudioProcessor:
         juce::ParameterID { paramSyncMode, 1 },
         "Sync Mode",
         juce::StringArray { "Follow DAW", "Free Audition" },
-        1)); // Default to Free Audition so Play works immediately even when DAW transport is stopped
+        0)); // Default to Follow DAW (Sync Play ON) so pressing Play in the DAW starts playback automatically
 
     params.push_back(std::make_unique<juce::AudioParameterBool>(
         juce::ParameterID { paramLoop, 1 },
@@ -81,6 +85,7 @@ void MidiPreviewerAudioProcessor::prepareToPlay(double newSampleRate, int /*samp
     activeNoteCount = 0;
     previewNoteCount = 0;
     lastPpqPosition = 0.0;
+    wasHostPlaying = false;
     currentPlayheadPpq.store(0.0, std::memory_order_relaxed);
     pendingAllNotesOff.store(true, std::memory_order_relaxed);
     activePitchBitsLow.store(0, std::memory_order_relaxed);
@@ -222,9 +227,9 @@ void MidiPreviewerAudioProcessor::updateActivePitchBitmask()
 
 bool MidiPreviewerAudioProcessor::isAudioPlaying() const
 {
-    const int syncMode = syncModeParam != nullptr ? static_cast<int>(syncModeParam->load(std::memory_order_relaxed)) : 1;
-    if (syncMode == static_cast<int>(SyncMode::FollowDAW))
-        return hostIsPlaying.load(std::memory_order_relaxed);
+    const int syncMode = syncModeParam != nullptr ? static_cast<int>(syncModeParam->load(std::memory_order_relaxed)) : 0;
+    if (syncMode == static_cast<int>(SyncMode::FollowDAW) && hostIsPlaying.load(std::memory_order_relaxed))
+        return true;
     return isPlaying.load(std::memory_order_relaxed);
 }
 
@@ -253,47 +258,35 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 {
     const int numSamples = std::max(1, buffer.getNumSamples() > 0 ? buffer.getNumSamples() : getBlockSize());
 
-    // Track host DAW key signature via explicit MIDI meta-events AND live DAW track notes
+    // Only accept explicit MIDI Key Signature meta-events (FF 59 02) if the host explicitly sends them;
+    // never infer the DAW's global project key by listening to incoming track notes.
     for (const auto metadata : midiMessages)
     {
         auto msg = metadata.getMessage();
-        if (msg.isKeySignatureMetaEvent() || (msg.isMetaEvent() && msg.getRawDataSize() >= 4 && msg.getRawData()[1] == 0x59))
+        if (msg.isKeySignatureMetaEvent())
         {
-            const auto* rawData = msg.getRawData();
-            const int size = msg.getRawDataSize();
-            int8_t sf = (size >= 4) ? static_cast<int8_t>(rawData[3]) : 0;
-            bool isMinor = (size >= 5) ? (rawData[4] != 0) : false;
-            int root = isMinor ? ((9 + sf * 7) % 12 + 12) % 12
-                               : ((sf * 7) % 12 + 12) % 12;
+            const int sf = msg.getKeySignatureNumberOfSharpsOrFlats();
+            const bool isMinor = !msg.isKeySignatureMajorKey();
+            const int root = isMinor ? ((9 + sf * 7) % 12 + 12) % 12
+                                     : ((sf * 7) % 12 + 12) % 12;
             hostKeyRoot.store(root, std::memory_order_relaxed);
             hostKeyIsMinor.store(isMinor, std::memory_order_relaxed);
             hostKeyDetected.store(true, std::memory_order_relaxed);
         }
-        else if (msg.isNoteOn() && msg.getVelocity() > 0)
+        else if (msg.isMetaEvent() && msg.getRawDataSize() >= 5 && msg.getRawData()[1] == 0x59)
         {
-            int pitchClass = msg.getNoteNumber() % 12;
-            float vel = msg.getFloatVelocity();
-            dawIncomingPitchClassWeights[static_cast<size_t>(pitchClass)] += vel;
-            dawIncomingNoteCount++;
-
-            if (dawIncomingNoteCount >= 8)
-            {
-                KeyDetector detector;
-                auto res = detector.analyzeNoteWeights(dawIncomingPitchClassWeights);
-                if (res.confidence > 0.05f)
-                {
-                    hostKeyRoot.store(res.rootPitch, std::memory_order_relaxed);
-                    hostKeyIsMinor.store(res.isMinor, std::memory_order_relaxed);
-                    hostKeyDetected.store(true, std::memory_order_relaxed);
-                }
-                for (auto& w : dawIncomingPitchClassWeights)
-                    w *= 0.5f;
-                dawIncomingNoteCount = 4;
-            }
+            const auto* rawData = msg.getRawData();
+            const int sf = static_cast<int8_t>(rawData[3]);
+            const bool isMinor = (rawData[4] != 0);
+            const int root = isMinor ? ((9 + sf * 7) % 12 + 12) % 12
+                                     : ((sf * 7) % 12 + 12) % 12;
+            hostKeyRoot.store(root, std::memory_order_relaxed);
+            hostKeyIsMinor.store(isMinor, std::memory_order_relaxed);
+            hostKeyDetected.store(true, std::memory_order_relaxed);
         }
     }
 
-    double currentBpm = 120.0;
+    double currentBpm = hostBpm.load(std::memory_order_relaxed);
     bool isHostPlayingNow = false;
     double hostPpq = 0.0;
 
@@ -301,8 +294,19 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     {
         if (auto posOpt = playHead->getPosition())
         {
-            if (auto bpm = posOpt->getBpm())
+            if (auto bpm = posOpt->getBpm(); bpm.hasValue() && *bpm >= 20.0 && *bpm <= 320.0)
+            {
                 currentBpm = *bpm;
+                hostBpm.store(currentBpm, std::memory_order_relaxed);
+                hostBpmDetected.store(true, std::memory_order_relaxed);
+            }
+
+            if (auto ts = posOpt->getTimeSignature(); ts.hasValue() && ts->numerator > 0 && ts->denominator > 0)
+            {
+                hostTimeSigNumerator.store(ts->numerator, std::memory_order_relaxed);
+                hostTimeSigDenominator.store(ts->denominator, std::memory_order_relaxed);
+                hostTimeSigDetected.store(true, std::memory_order_relaxed);
+            }
 
             isHostPlayingNow = posOpt->getIsPlaying();
 
@@ -311,7 +315,6 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         }
     }
 
-    hostBpm.store(currentBpm, std::memory_order_relaxed);
     hostIsPlaying.store(isHostPlayingNow, std::memory_order_relaxed);
 
     handleIncomingCommands(midiMessages);
@@ -353,13 +356,34 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         }
     }
 
+    const int syncMode = static_cast<int>(syncModeParam->load(std::memory_order_relaxed));
+    const bool followDaw = (syncMode == static_cast<int>(SyncMode::FollowDAW));
+
+    const bool dawJustStarted = !wasHostPlaying && isHostPlayingNow;
+    const bool dawJustStopped = wasHostPlaying && !isHostPlayingNow;
+    wasHostPlaying = isHostPlayingNow;
+
+    if (followDaw)
+    {
+        if (dawJustStarted)
+        {
+            isPlaying.store(true, std::memory_order_relaxed);
+            flushAllNotesOff(midiMessages);
+        }
+        else if (dawJustStopped)
+        {
+            isPlaying.store(false, std::memory_order_relaxed);
+            currentPlayheadPpq.store(0.0, std::memory_order_relaxed);
+            flushAllNotesOff(midiMessages);
+        }
+    }
+
     if (activeSequence == nullptr || activeSequence->events.empty())
     {
         updateActivePitchBitmask();
         return;
     }
 
-    const int syncMode = static_cast<int>(syncModeParam->load(std::memory_order_relaxed));
     const bool loopEnabled = loopParam->load(std::memory_order_relaxed) > 0.5f;
     const int transpose = static_cast<int>(transposeParam->load(std::memory_order_relaxed));
     const float speedMultiplier = std::max(0.1f, speedMultParam->load(std::memory_order_relaxed));
@@ -372,9 +396,9 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     double endPpq = 0.0;
     double effectiveBpm = currentBpm;
 
-    if (syncMode == static_cast<int>(SyncMode::FollowDAW))
+    if (followDaw && isHostPlayingNow)
     {
-        if (!isHostPlayingNow)
+        if (!loopEnabled && (hostPpq * speedMultiplier) >= seqLengthPpq)
         {
             if (activeNoteCount > 0)
                 flushAllNotesOff(midiMessages);
@@ -404,7 +428,9 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         }
 
         const float manualBpm = manualTempoParam != nullptr ? manualTempoParam->load(std::memory_order_relaxed) : 120.0f;
-        effectiveBpm = manualBpm >= 20.0f ? static_cast<double>(manualBpm) : currentBpm;
+        effectiveBpm = (followDaw && hostBpmDetected.load(std::memory_order_relaxed))
+            ? currentBpm
+            : (manualBpm >= 20.0f ? static_cast<double>(manualBpm) : currentBpm);
 
         const double ppqPerSample = (effectiveBpm / (60.0 * sampleRate)) * speedMultiplier;
         const double blockPpqSpan = ppqPerSample * numSamples;
@@ -783,25 +809,347 @@ juce::String MidiPreviewerAudioProcessor::getSavedUiStateJson() const
     return savedUiStateJson;
 }
 
+namespace
+{
+    std::mutex& getSharedLibraryFileMutex()
+    {
+        static std::mutex m;
+        return m;
+    }
+
+    struct SharedLibraryStore
+    {
+        std::mutex mutex;
+        bool loaded { false };
+        bool loading { false };
+        std::vector<std::function<void()>> pendingCallbacks;
+        std::vector<juce::String> folders;
+        std::vector<ScannedFileMetadata> files;
+    };
+
+    SharedLibraryStore& getSharedLibraryStore()
+    {
+        static SharedLibraryStore store;
+        return store;
+    }
+
+    void readLibraryFromDisk(const juce::File& libFile,
+                             std::vector<juce::String>& outFolders,
+                             std::vector<ScannedFileMetadata>& outFiles)
+    {
+        std::lock_guard<std::mutex> fileLock(getSharedLibraryFileMutex());
+        if (!libFile.existsAsFile())
+            return;
+
+        const juce::var parsed = juce::JSON::parse(libFile);
+        if (!parsed.isObject())
+            return;
+
+        std::unordered_set<std::string> seenFolders;
+        if (const auto* foldersArr = parsed.getProperty("folders", juce::var()).getArray())
+        {
+            outFolders.reserve(static_cast<size_t>(foldersArr->size()));
+            for (const auto& entry : *foldersArr)
+            {
+                const juce::String folderPath = entry.toString();
+                if (folderPath.isNotEmpty() && seenFolders.insert(folderPath.toStdString()).second)
+                    outFolders.push_back(folderPath);
+            }
+        }
+
+        if (const auto* filesArr = parsed.getProperty("files", juce::var()).getArray())
+        {
+            outFiles.reserve(static_cast<size_t>(filesArr->size()));
+            std::unordered_set<std::string> seenFiles;
+            seenFiles.reserve(static_cast<size_t>(filesArr->size()) + 16);
+
+            for (const auto& entry : *filesArr)
+            {
+                if (!entry.isObject())
+                    continue;
+
+                ScannedFileMetadata meta;
+                meta.name = entry.getProperty("name", "").toString();
+                meta.relativePath = entry.getProperty("relativePath", "").toString();
+                meta.fullPath = entry.getProperty("fullPath", "").toString();
+                meta.sizeBytes = static_cast<juce::int64>(entry.getProperty("sizeBytes", 0));
+
+                if (meta.fullPath.isNotEmpty() && seenFiles.insert(meta.fullPath.toStdString()).second)
+                    outFiles.push_back(std::move(meta));
+            }
+        }
+    }
+
+    void mergeIntoStoreLocked(SharedLibraryStore& store,
+                              const std::vector<juce::String>& diskFolders,
+                              const std::vector<ScannedFileMetadata>& diskFiles)
+    {
+        std::unordered_set<std::string> seenFolders;
+        seenFolders.reserve(store.folders.size() + diskFolders.size());
+        for (const auto& f : store.folders)
+            seenFolders.insert(f.toStdString());
+        for (const auto& f : diskFolders)
+        {
+            if (f.isNotEmpty() && seenFolders.insert(f.toStdString()).second)
+                store.folders.push_back(f);
+        }
+
+        std::unordered_set<std::string> seenFiles;
+        seenFiles.reserve(store.files.size() + diskFiles.size());
+        for (const auto& item : store.files)
+            seenFiles.insert(item.fullPath.toStdString());
+        for (const auto& item : diskFiles)
+        {
+            if (item.fullPath.isNotEmpty() && seenFiles.insert(item.fullPath.toStdString()).second)
+                store.files.push_back(item);
+        }
+
+        store.loaded = true;
+    }
+
+    void scheduleSaveGlobalLibraryToDisk(const juce::File& libFile)
+    {
+        juce::Thread::launch([libFile]()
+        {
+            std::lock_guard<std::mutex> fileLock(getSharedLibraryFileMutex());
+
+            std::vector<juce::String> foldersCopy;
+            std::vector<ScannedFileMetadata> filesCopy;
+            {
+                auto& store = getSharedLibraryStore();
+                std::lock_guard<std::mutex> storeLock(store.mutex);
+                foldersCopy = store.folders;
+                filesCopy = store.files;
+            }
+
+            juce::DynamicObject::Ptr root = new juce::DynamicObject();
+
+            juce::Array<juce::var> foldersArr;
+            for (const auto& folder : foldersCopy)
+                foldersArr.add(folder);
+            root->setProperty("folders", foldersArr);
+
+            juce::Array<juce::var> filesArr;
+            filesArr.ensureStorageAllocated(static_cast<int>(filesCopy.size()));
+            for (const auto& item : filesCopy)
+            {
+                juce::DynamicObject::Ptr fObj = new juce::DynamicObject();
+                fObj->setProperty("name", item.name);
+                fObj->setProperty("relativePath", item.relativePath);
+                fObj->setProperty("fullPath", item.fullPath);
+                fObj->setProperty("sizeBytes", static_cast<juce::int64>(item.sizeBytes));
+                filesArr.add(juce::var(fObj.get()));
+            }
+            root->setProperty("files", filesArr);
+
+            // Compact JSON (allOnOneLine = true) dramatically speeds up write & parse on large libraries
+            libFile.replaceWithText(juce::JSON::toString(juce::var(root.get()), true));
+        });
+    }
+} // namespace
+
+juce::File MidiPreviewerAudioProcessor::getGlobalLibraryFile()
+{
+    auto appData = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory);
+   #if JUCE_MAC
+    auto dir = appData.getChildFile("Application Support").getChildFile("Daz Corp").getChildFile("MidiLens");
+   #else
+    auto dir = appData.getChildFile("Daz Corp").getChildFile("MidiLens");
+   #endif
+    dir.createDirectory();
+    return dir.getChildFile("shared_library.json");
+}
+
+void MidiPreviewerAudioProcessor::loadGlobalLibraryAsync(std::function<void()> onLoaded)
+{
+    auto& store = getSharedLibraryStore();
+    bool startThread = false;
+    bool alreadyLoaded = false;
+
+    {
+        std::lock_guard<std::mutex> lock(store.mutex);
+        if (store.loaded)
+        {
+            alreadyLoaded = true;
+        }
+        else
+        {
+            if (onLoaded)
+                store.pendingCallbacks.push_back(std::move(onLoaded));
+
+            if (!store.loading)
+            {
+                store.loading = true;
+                startThread = true;
+            }
+        }
+    }
+
+    if (alreadyLoaded)
+    {
+        if (onLoaded)
+        {
+            juce::MessageManager::callAsync([cb = std::move(onLoaded)]()
+            {
+                cb();
+            });
+        }
+        return;
+    }
+
+    if (!startThread)
+        return;
+
+    const juce::File libFile = getGlobalLibraryFile();
+    juce::Thread::launch([libFile]()
+    {
+        std::vector<juce::String> diskFolders;
+        std::vector<ScannedFileMetadata> diskFiles;
+        readLibraryFromDisk(libFile, diskFolders, diskFiles);
+
+        std::vector<std::function<void()>> callbacks;
+        {
+            auto& s = getSharedLibraryStore();
+            std::lock_guard<std::mutex> lock(s.mutex);
+            mergeIntoStoreLocked(s, diskFolders, diskFiles);
+            s.loading = false;
+            callbacks.swap(s.pendingCallbacks);
+        }
+
+        if (!callbacks.empty())
+        {
+            juce::MessageManager::callAsync([callbacks = std::move(callbacks)]()
+            {
+                for (const auto& cb : callbacks)
+                {
+                    if (cb)
+                        cb();
+                }
+            });
+        }
+    });
+}
+
+void MidiPreviewerAudioProcessor::appendScannedFolders(const std::vector<juce::String>& folderPaths)
+{
+    auto& store = getSharedLibraryStore();
+    const juce::File libFile = getGlobalLibraryFile();
+
+    bool needsDiskHydration = false;
+    {
+        std::lock_guard<std::mutex> lock(store.mutex);
+        needsDiskHydration = !store.loaded;
+    }
+
+    if (needsDiskHydration)
+    {
+        std::vector<juce::String> diskFolders;
+        std::vector<ScannedFileMetadata> diskFiles;
+        readLibraryFromDisk(libFile, diskFolders, diskFiles);
+        std::lock_guard<std::mutex> lock(store.mutex);
+        if (!store.loaded)
+            mergeIntoStoreLocked(store, diskFolders, diskFiles);
+    }
+
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lock(store.mutex);
+        std::unordered_set<std::string> existing;
+        existing.reserve(store.folders.size() + folderPaths.size());
+        for (const auto& f : store.folders)
+            existing.insert(f.toStdString());
+
+        for (const auto& folder : folderPaths)
+        {
+            if (folder.isNotEmpty() && existing.insert(folder.toStdString()).second)
+            {
+                store.folders.push_back(folder);
+                changed = true;
+            }
+        }
+    }
+
+    if (changed)
+        scheduleSaveGlobalLibraryToDisk(libFile);
+}
+
+std::vector<juce::String> MidiPreviewerAudioProcessor::getScannedFolders() const
+{
+    auto& store = getSharedLibraryStore();
+    std::lock_guard<std::mutex> lock(store.mutex);
+    return store.folders;
+}
+
 void MidiPreviewerAudioProcessor::appendScannedFiles(const std::vector<ScannedFileMetadata>& files)
 {
-    std::lock_guard<std::mutex> lock(uiStateMutex);
-    std::unordered_set<std::string> existing;
-    existing.reserve(scannedFilesMetadata.size() + files.size());
-    for (const auto& f : scannedFilesMetadata)
-        existing.insert(f.fullPath.toStdString());
+    auto& store = getSharedLibraryStore();
+    const juce::File libFile = getGlobalLibraryFile();
 
-    for (const auto& item : files)
+    bool needsDiskHydration = false;
     {
-        if (existing.insert(item.fullPath.toStdString()).second)
-            scannedFilesMetadata.push_back(item);
+        std::lock_guard<std::mutex> lock(store.mutex);
+        needsDiskHydration = !store.loaded;
     }
+
+    if (needsDiskHydration)
+    {
+        std::vector<juce::String> diskFolders;
+        std::vector<ScannedFileMetadata> diskFiles;
+        readLibraryFromDisk(libFile, diskFolders, diskFiles);
+        std::lock_guard<std::mutex> lock(store.mutex);
+        if (!store.loaded)
+            mergeIntoStoreLocked(store, diskFolders, diskFiles);
+    }
+
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lock(store.mutex);
+        std::unordered_set<std::string> existing;
+        existing.reserve(store.files.size() + files.size());
+        for (const auto& f : store.files)
+            existing.insert(f.fullPath.toStdString());
+
+        for (const auto& item : files)
+        {
+            if (existing.insert(item.fullPath.toStdString()).second)
+            {
+                store.files.push_back(item);
+                changed = true;
+            }
+        }
+    }
+
+    if (changed)
+        scheduleSaveGlobalLibraryToDisk(libFile);
 }
 
 std::vector<ScannedFileMetadata> MidiPreviewerAudioProcessor::getScannedFiles() const
 {
+    auto& store = getSharedLibraryStore();
+    std::lock_guard<std::mutex> lock(store.mutex);
+    return store.files;
+}
+
+void MidiPreviewerAudioProcessor::clearGlobalLibrary()
+{
+    auto& store = getSharedLibraryStore();
+    {
+        std::lock_guard<std::mutex> lock(store.mutex);
+        store.folders.clear();
+        store.files.clear();
+        store.loaded = true;
+        store.loading = false;
+        store.pendingCallbacks.clear();
+    }
+    scheduleSaveGlobalLibraryToDisk(getGlobalLibraryFile());
+}
+
+void MidiPreviewerAudioProcessor::retainFileChooser(std::shared_ptr<juce::FileChooser> chooser)
+{
+    if (chooser == nullptr)
+        return;
     std::lock_guard<std::mutex> lock(uiStateMutex);
-    return scannedFilesMetadata;
+    retainedFileChoosers.push_back(std::move(chooser));
 }
 
 KeyDetectionResult MidiPreviewerAudioProcessor::getDetectedKey() const

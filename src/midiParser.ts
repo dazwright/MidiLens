@@ -1412,13 +1412,32 @@ export function parseMidiFile(arrayBuffer: ArrayBuffer, fileName: string): MidiS
     throw new Error('Not a valid MIDI file: File is too small (< 14 bytes)');
   }
 
-  // Verify Header chunk 'MThd'
-  const headerId = String.fromCharCode(
-    data.getUint8(offset++),
-    data.getUint8(offset++),
-    data.getUint8(offset++),
-    data.getUint8(offset++)
+  // Support RIFF-wrapped RMID files by locating the embedded 'MThd' header
+  let headerId = String.fromCharCode(
+    data.getUint8(offset),
+    data.getUint8(offset + 1),
+    data.getUint8(offset + 2),
+    data.getUint8(offset + 3)
   );
+  if (headerId === 'RIFF') {
+    let foundMThd = -1;
+    for (let i = 12; i + 14 <= data.byteLength; i++) {
+      if (
+        data.getUint8(i) === 0x4d && // M
+        data.getUint8(i + 1) === 0x54 && // T
+        data.getUint8(i + 2) === 0x68 && // h
+        data.getUint8(i + 3) === 0x64 // d
+      ) {
+        foundMThd = i;
+        break;
+      }
+    }
+    if (foundMThd >= 0) {
+      offset = foundMThd;
+      headerId = 'MThd';
+    }
+  }
+  offset += 4;
 
   if (headerId !== 'MThd') {
     throw new Error('Not a valid MIDI file: Missing MThd header chunk');
@@ -1545,7 +1564,7 @@ export function parseMidiFile(arrayBuffer: ArrayBuffer, fileName: string): MidiS
           timeSigNum = data.getUint8(offset);
           timeSigDen = Math.pow(2, data.getUint8(offset + 1));
         }
-        offset += metaLen;
+        offset = Math.min(trackEnd, offset + metaLen);
       } else if (status === 0xf0 || status === 0xf7) {
         // SysEx
         let sysLen = 0;
@@ -1555,7 +1574,15 @@ export function parseMidiFile(arrayBuffer: ArrayBuffer, fileName: string): MidiS
           sb = data.getUint8(offset++);
           sysLen = (sysLen << 7) | (sb & 0x7f);
         } while (sb & 0x80);
-        offset += sysLen;
+        offset = Math.min(trackEnd, offset + sysLen);
+      } else if (status === 0xf2) {
+        // Song Position Pointer: 2 data bytes
+        offset += 2;
+      } else if (status === 0xf1 || status === 0xf3) {
+        // MTC Quarter Frame / Song Select: 1 data byte
+        offset += 1;
+      } else if (status >= 0xf4 && status <= 0xfe) {
+        // System Common (0xf6 Tune Request) / Realtime (0xf8..0xfe): 0 data bytes
       } else if (msgType === 0xa0 || msgType === 0xb0 || msgType === 0xe0) {
         // Polyphonic aftertouch, CC, Pitch Bend: 2 data bytes
         offset += 2;
@@ -1568,8 +1595,12 @@ export function parseMidiFile(arrayBuffer: ArrayBuffer, fileName: string): MidiS
     offset = trackEnd;
   }
 
-  // Sort and pair Note-On with Note-Off
-  rawEvents.sort((a, b) => a.tick - b.tick);
+  // Sort by tick, processing Note-Off before Note-On at identical ticks so re-triggered notes stay intact
+  rawEvents.sort((a, b) => {
+    if (a.tick !== b.tick) return a.tick - b.tick;
+    if (a.type !== b.type) return a.type === 'off' ? -1 : 1;
+    return 0;
+  });
 
   const notes: MidiNote[] = [];
   let nextId = 1;
@@ -1626,12 +1657,27 @@ export function parseMidiFile(arrayBuffer: ArrayBuffer, fileName: string): MidiS
     });
   }
 
+  // Normalize full empty leading bars (e.g. DAW exports positioned at bar 5/9/17) so notes begin inside bar 1
+  const barPpq = (timeSigNum || 4) * (4 / (timeSigDen || 4));
+  if (notes.length > 0 && barPpq > 0) {
+    let minStartPpq = Infinity;
+    for (const n of notes) {
+      if (n.startPpq < minStartPpq) minStartPpq = n.startPpq;
+    }
+    const leadingBars = Math.floor(minStartPpq / barPpq);
+    if (leadingBars >= 1) {
+      const shiftPpq = leadingBars * barPpq;
+      for (const n of notes) {
+        n.startPpq = Math.max(0, n.startPpq - shiftPpq);
+      }
+    }
+  }
+
   // Calculate sequence length rounded to bar boundaries
   let maxPpq = 4;
   for (const n of notes) {
     maxPpq = Math.max(maxPpq, n.startPpq + n.durationPpq);
   }
-  const barPpq = (timeSigNum || 4) * (4 / (timeSigDen || 4));
   const totalLengthPpq = Math.max(barPpq, Math.ceil(maxPpq / barPpq) * barPpq);
 
   return {

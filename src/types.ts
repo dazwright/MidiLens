@@ -25,6 +25,7 @@ export interface MidiNote {
   durationPpq: number; // in quarter notes
   velocity: number; // 0.0 - 1.0
   channel: number;
+  locked?: boolean;
 }
 
 export interface MidiSequence {

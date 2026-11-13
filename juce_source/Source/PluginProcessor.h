@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -86,16 +87,25 @@ public:
     // GUI / Audio thread commands
     void sendAudioCommand(const AudioCommand& cmd);
 
-    // Persistent WebUI State & Scanned Library Metadata
+    // Persistent WebUI State & Global Scanned Library Metadata (shared across all tracks/instances)
     void setSavedUiStateJson(const juce::String& json);
     juce::String getSavedUiStateJson() const;
+    void loadGlobalLibraryAsync(std::function<void()> onLoaded);
+    void appendScannedFolders(const std::vector<juce::String>& folderPaths);
+    std::vector<juce::String> getScannedFolders() const;
     void appendScannedFiles(const std::vector<ScannedFileMetadata>& files);
     std::vector<ScannedFileMetadata> getScannedFiles() const;
+    void clearGlobalLibrary();
+    void retainFileChooser(std::shared_ptr<juce::FileChooser> chooser);
 
     // Audio Playback State getters for GUI polling
     double getCurrentPlayheadPpq() const { return currentPlayheadPpq.load(std::memory_order_relaxed); }
     bool isAudioPlaying() const;
     double getHostBpm() const { return hostBpm.load(std::memory_order_relaxed); }
+    bool isHostBpmDetected() const { return hostBpmDetected.load(std::memory_order_relaxed); }
+    int getHostTimeSigNumerator() const { return hostTimeSigNumerator.load(std::memory_order_relaxed); }
+    int getHostTimeSigDenominator() const { return hostTimeSigDenominator.load(std::memory_order_relaxed); }
+    bool isHostTimeSigDetected() const { return hostTimeSigDetected.load(std::memory_order_relaxed); }
     bool isHostPlaying() const { return hostIsPlaying.load(std::memory_order_relaxed); }
     std::vector<int> getActivePitches() const;
     KeyDetectionResult getDetectedKey() const;
@@ -148,10 +158,12 @@ private:
     std::shared_ptr<const SequenceSnapshot> pendingSequence { nullptr };
     mutable std::mutex sequenceExchangeMutex;
 
-    // Persistent WebUI JSON & library state across editor close/reopen and DAW project saves
+    // Persistent WebUI JSON across editor close/reopen and DAW project saves
     mutable std::mutex uiStateMutex;
     juce::String savedUiStateJson;
-    std::vector<ScannedFileMetadata> scannedFilesMetadata;
+    std::vector<std::shared_ptr<juce::FileChooser>> retainedFileChoosers;
+
+    static juce::File getGlobalLibraryFile();
 
     // Lock-free Command FIFO
     LockFreeCommandQueue<AudioCommand, 128> commandQueue;
@@ -184,6 +196,10 @@ private:
     std::atomic<double> currentPlayheadPpq { 0.0 };
     std::atomic<bool> isPlaying { false };
     std::atomic<double> hostBpm { 120.0 };
+    std::atomic<bool> hostBpmDetected { false };
+    std::atomic<int> hostTimeSigNumerator { 4 };
+    std::atomic<int> hostTimeSigDenominator { 4 };
+    std::atomic<bool> hostTimeSigDetected { false };
     std::atomic<bool> hostIsPlaying { false };
     std::atomic<bool> pendingAllNotesOff { false };
     std::atomic<int> hostKeyRoot { 0 };
@@ -201,10 +217,7 @@ private:
 
     double sampleRate { 44100.0 };
     double lastPpqPosition { 0.0 };
-
-    // Real-time DAW track key signature accumulator
-    std::array<float, 12> dawIncomingPitchClassWeights { 0.0f };
-    int dawIncomingNoteCount { 0 };
+    bool wasHostPlaying { false };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MidiPreviewerAudioProcessor)
 };

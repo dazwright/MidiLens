@@ -17,6 +17,8 @@ import {
   CheckSquare,
   X,
   Music,
+  Lock,
+  Unlock,
 } from 'lucide-react';
 import { synthAudioEngine } from '../audioEngine';
 
@@ -97,12 +99,29 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
   const [zoomX, setZoomX] = useState(1.0); // 0.5x to 4.0x
   const [zoomY, setZoomY] = useState(1.0); // 0.7x to 2.5x
 
-  // Pitch range auto-fit
-  const minPitch = Math.max(12, Math.min(...notes.map((n) => n.pitch), 48) - 4);
-  const maxPitch = Math.min(120, Math.max(...notes.map((n) => n.pitch), 72) + 4);
+  // Pitch range auto-fit dynamically centered on actual notes (including transpose preview)
+  let rawMinPitch = 48;
+  let rawMaxPitch = 72;
+  if (notes.length > 0) {
+    rawMinPitch = 127;
+    rawMaxPitch = 0;
+    for (const n of notes) {
+      const eff = Math.min(127, Math.max(0, n.pitch + previewTranspose));
+      if (eff < rawMinPitch) rawMinPitch = eff;
+      if (eff > rawMaxPitch) rawMaxPitch = eff;
+    }
+    const span = rawMaxPitch - rawMinPitch;
+    if (span < 16) {
+      const pad = Math.ceil((16 - span) / 2);
+      rawMinPitch = Math.max(0, rawMinPitch - pad);
+      rawMaxPitch = Math.min(127, rawMaxPitch + pad);
+    }
+  }
+  const minPitch = Math.max(0, rawMinPitch - 3);
+  const maxPitch = Math.min(127, rawMaxPitch + 3);
 
   const rulerHeight = 34;
-  const pianoKeysWidth = 48;
+  const pianoKeysWidth = 56;
 
   // Interaction tracking state
   const dragRef = useRef<{
@@ -131,26 +150,34 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     hasPushedSnapshot: false,
   });
 
-  // Responsive canvas resize
+  // Responsive canvas resize (handles both window resize and flex container resize when ARP/Humanise panels toggle)
   useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
     const updateSize = () => {
       if (containerRef.current) {
-        setDimensions({
-          width: containerRef.current.clientWidth,
-          height: containerRef.current.clientHeight,
-        });
+        const nextW = containerRef.current.clientWidth;
+        const nextH = containerRef.current.clientHeight;
+        setDimensions((prev) =>
+          prev.width === nextW && prev.height === nextH ? prev : { width: nextW, height: nextH }
+        );
       }
     };
     updateSize();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateSize) : null;
+    ro?.observe(el);
     window.addEventListener('resize', updateSize);
-    return () => window.removeEventListener('resize', updateSize);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', updateSize);
+    };
   }, []);
 
-  const basePixelsPerPpq = Math.max(30, (dimensions.width - pianoKeysWidth - 60) / Math.max(4, totalLengthPpq));
+  const basePixelsPerPpq = Math.max(4, (dimensions.width - pianoKeysWidth - 60) / Math.max(4, totalLengthPpq));
   const pixelsPerPpq = basePixelsPerPpq * zoomX;
 
   const pitchSpan = Math.max(1, maxPitch - minPitch + 1);
-  const baseNoteHeight = Math.max(10, (dimensions.height - rulerHeight) / pitchSpan);
+  const baseNoteHeight = Math.max(4, (dimensions.height - rulerHeight) / pitchSpan);
   const noteHeight = baseNoteHeight * zoomY;
 
   // Coordinate transforms
@@ -280,12 +307,12 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       const inScale = scaleType === 'chromatic' ? true : isPitchInScale(p, scaleRoot, scaleType);
 
       if (scaleType !== 'chromatic' && !inScale) {
-        // Out-of-scale pitch lane: Deep obsidian phosphor black (clean, zero diagonal stripes)
-        ctx.fillStyle = '#040705';
+        // Out-of-scale pitch lane: Deep obsidian black (subtle distinction between white & black key rows)
+        ctx.fillStyle = isBlack ? '#030504' : '#050907';
         ctx.fillRect(pianoKeysWidth, y, width - pianoKeysWidth, noteHeight);
       } else {
-        // In-scale pitch lane: Subtle night-green cathode ray glow
-        ctx.fillStyle = isBlack ? '#070e0a' : '#0b160f';
+        // In-scale pitch lane: Subtle night-green cathode ray glow with black/white key lane contrast
+        ctx.fillStyle = isBlack ? '#060d09' : '#0d1912';
         ctx.fillRect(pianoKeysWidth, y, width - pianoKeysWidth, noteHeight);
       }
 
@@ -299,44 +326,99 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       ctx.stroke();
     }
 
-    // Draw Piano Key Column on Left (Analog CRT scope index)
-    ctx.fillStyle = '#090e0b';
+    // Draw Piano Key Column on Left (High-contrast Black & White Keyboard)
+    ctx.fillStyle = '#f8fafc';
     ctx.fillRect(0, rulerHeight, pianoKeysWidth, height - rulerHeight);
+
+    const blackKeyWidth = pianoKeysWidth - 20;
+    const sharpNames: Record<number, string> = { 1: 'C#', 3: 'D#', 6: 'F#', 8: 'G#', 10: 'A#' };
 
     for (let p = minPitch; p <= maxPitch; p++) {
       const y = pitchToY(p);
-      const semitone = p % 12;
+      const semitone = ((p % 12) + 12) % 12;
       const isBlack = [1, 3, 6, 8, 10].includes(semitone);
       const inScale = scaleType === 'chromatic' ? true : isPitchInScale(p, scaleRoot, scaleType);
 
       if (isBlack) {
-        ctx.fillStyle = inScale ? '#111a14' : '#080c09';
-        ctx.fillRect(0, y, pianoKeysWidth - 14, noteHeight - 1);
+        // White continuation strip on the right behind the black key (like a real piano keybed)
+        ctx.fillStyle = inScale ? '#f1f5f9' : '#dce1e8';
+        ctx.fillRect(blackKeyWidth, y, pianoKeysWidth - blackKeyWidth, noteHeight);
+
+        // Split line across the right white strip where adjacent white keys meet
+        ctx.strokeStyle = '#94a3b8';
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.moveTo(blackKeyWidth, y + noteHeight / 2);
+        ctx.lineTo(pianoKeysWidth, y + noteHeight / 2);
+        ctx.stroke();
+
+        // Jet-black raised piano key on the left 64%
+        ctx.fillStyle = inScale ? '#090b0f' : '#1b1f26';
+        ctx.fillRect(0, y + 0.5, blackKeyWidth, Math.max(2, noteHeight - 1));
+
+        // Top bevel highlight & crisp dark outline for raised 3D black-key look
+        ctx.fillStyle = inScale ? '#2a303c' : '#333a47';
+        ctx.fillRect(1, y + 1, Math.max(1, blackKeyWidth - 2), 1.5);
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(0, y + 0.5, blackKeyWidth, Math.max(2, noteHeight - 1));
+
+        if (noteHeight >= 10 && sharpNames[semitone]) {
+          ctx.fillStyle = inScale ? '#e2e8f0' : '#94a3b8';
+          ctx.font = 'bold 8px "JetBrains Mono", monospace';
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(sharpNames[semitone], 4, y + noteHeight / 2);
+        }
       } else {
-        ctx.fillStyle = inScale ? '#17241c' : '#0c120e';
+        // Pure crisp white piano key
+        ctx.fillStyle = inScale ? '#ffffff' : '#dde2e9';
         ctx.fillRect(0, y, pianoKeysWidth, noteHeight);
 
-        ctx.strokeStyle = inScale ? 'rgba(16, 185, 129, 0.25)' : 'rgba(0, 0, 0, 0.5)';
-        ctx.lineWidth = 0.8;
-        ctx.strokeRect(0, y, pianoKeysWidth, noteHeight);
+        // Subtle right-edge bevel shading
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.08)';
+        ctx.fillRect(pianoKeysWidth - 3, y, 3, noteHeight);
+
+        // Crisp key separator lines (darker at C/B boundary)
+        ctx.strokeStyle = semitone === 0 ? '#475569' : '#94a3b8';
+        ctx.lineWidth = semitone === 0 ? 1.2 : 0.8;
+        ctx.beginPath();
+        ctx.moveTo(0, y + noteHeight);
+        ctx.lineTo(pianoKeysWidth, y + noteHeight);
+        ctx.stroke();
 
         if (semitone === 0) {
           const octave = Math.floor(p / 12) - 1;
-          ctx.fillStyle = inScale ? '#34d399' : '#4b6354';
-          ctx.font = 'bold 9px "JetBrains Mono", monospace';
+          ctx.fillStyle = '#0f172a';
+          ctx.font = 'bold 9.5px "JetBrains Mono", monospace';
           ctx.textAlign = 'right';
-          ctx.fillText(`C${octave}`, pianoKeysWidth - 5, y + noteHeight * 0.72);
+          ctx.textBaseline = 'middle';
+          ctx.fillText(`C${octave}`, pianoKeysWidth - 10, y + noteHeight / 2);
+        } else if (noteHeight >= 13) {
+          ctx.fillStyle = inScale ? '#475569' : '#64748b';
+          ctx.font = '600 8px "JetBrains Mono", monospace';
+          ctx.textAlign = 'right';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(getNoteName(semitone), pianoKeysWidth - 10, y + noteHeight / 2);
         }
       }
 
-      // Scale indicator dot on key
+      // Scale indicator dot neatly along right edge of keybed
       if (scaleType !== 'chromatic') {
-        ctx.fillStyle = inScale ? '#10b981' : 'rgba(16, 185, 129, 0.15)';
+        ctx.fillStyle = inScale ? '#10b981' : 'rgba(100, 116, 139, 0.25)';
         ctx.beginPath();
-        ctx.arc(pianoKeysWidth - 7, y + noteHeight / 2, inScale ? 2.2 : 1.0, 0, Math.PI * 2);
+        ctx.arc(pianoKeysWidth - 5, y + noteHeight / 2, inScale ? 2.4 : 1.0, 0, Math.PI * 2);
         ctx.fill();
       }
     }
+
+    // Crisp vertical divider separating keyboard column from note grid
+    ctx.strokeStyle = '#1e293b';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(pianoKeysWidth, rulerHeight);
+    ctx.lineTo(pianoKeysWidth, height);
+    ctx.stroke();
 
     // Vertical Bar & Beat Grid
     const barPpq = timeSigNumerator * (4 / timeSigDenominator);
@@ -443,12 +525,17 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       const w = Math.max(6, note.durationPpq * pixelsPerPpq);
       const y = pitchToY(effectivePitch);
       const isSelected = selectedNoteIds.has(note.id);
+      const isLocked = Boolean(note.locked);
 
       ctx.save();
       if (isSelected) {
-        ctx.shadowColor = '#f59e0b';
+        ctx.shadowColor = isLocked ? '#38bdf8' : '#f59e0b';
         ctx.shadowBlur = 10;
-        ctx.fillStyle = '#fbbf24';
+        ctx.fillStyle = isLocked ? '#38bdf8' : '#fbbf24';
+      } else if (isLocked) {
+        ctx.shadowColor = '#0ea5e9';
+        ctx.shadowBlur = 8;
+        ctx.fillStyle = inScale ? '#0284c7' : '#1e3a5f';
       } else if (inScale) {
         ctx.shadowColor = '#10b981';
         ctx.shadowBlur = 8;
@@ -464,12 +551,12 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       ctx.restore();
 
       // Subtle top highlight sheen
-      ctx.fillStyle = isSelected ? '#fef3c7' : inScale ? '#6ee7b7' : '#64748b';
+      ctx.fillStyle = isSelected ? '#fef3c7' : isLocked ? '#bae6fd' : inScale ? '#6ee7b7' : '#64748b';
       ctx.fillRect(x + 1, y + 1.5, Math.max(1, w - 2), 1.0);
 
-      // Border: Clean phosphor green / amber border
-      ctx.strokeStyle = isSelected ? '#ffffff' : inScale ? '#059669' : '#1e293b';
-      ctx.lineWidth = isSelected ? 1.5 : 1.0;
+      // Border: Clean phosphor green / amber / locked cyan border
+      ctx.strokeStyle = isSelected ? '#ffffff' : isLocked ? '#7dd3fc' : inScale ? '#059669' : '#1e293b';
+      ctx.lineWidth = isSelected || isLocked ? 1.5 : 1.0;
       ctx.strokeRect(x, y + 1, w, noteHeight - 2);
 
       // Distinct Right-Edge Trim / Resize Handle (Tactile Hardware Grip)
@@ -480,6 +567,21 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         // Bright vertical notch grip indicator
         ctx.fillStyle = isSelected ? '#ffffff' : 'rgba(255, 255, 255, 0.65)';
         ctx.fillRect(x + w - 2.5, y + 3, 1, noteHeight - 6);
+      }
+
+      // Miniature padlock icon for locked notes
+      if (isLocked && w >= 12 && noteHeight >= 9) {
+        const lockX = x + 3;
+        const lockMidY = y + noteHeight / 2;
+        ctx.save();
+        ctx.strokeStyle = isSelected ? '#0f172a' : '#e0f2fe';
+        ctx.fillStyle = isSelected ? '#0f172a' : '#e0f2fe';
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        ctx.arc(lockX + 3, lockMidY - 1.5, 2, Math.PI, 0);
+        ctx.stroke();
+        ctx.fillRect(lockX + 0.5, lockMidY - 1.2, 5, 4);
+        ctx.restore();
       }
 
       // Out of scale warning icon/stripes on note if scaleLock is enabled
@@ -499,19 +601,22 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         const useFlats = [1, 3, 5, 8, 10].includes(scaleRoot);
         const noteLetter = getNoteName(pc, useFlats);
         const displayName = w >= 28 ? `${noteLetter}${octave}` : noteLetter;
+        const textOffsetX = isLocked ? x + 11 : x + 4;
 
-        const fontSize = Math.min(10, Math.max(7, Math.floor(noteHeight - 3)));
-        ctx.font = `bold ${fontSize}px "JetBrains Mono", monospace`;
-        ctx.textBaseline = 'middle';
-        ctx.textAlign = 'left';
+        if (!isLocked || w >= 20) {
+          const fontSize = Math.min(10, Math.max(7, Math.floor(noteHeight - 3)));
+          ctx.font = `bold ${fontSize}px "JetBrains Mono", monospace`;
+          ctx.textBaseline = 'middle';
+          ctx.textAlign = 'left';
 
-        // Dark shadow for high contrast on light velocity colors
-        ctx.fillStyle = isSelected ? '#ffffff' : 'rgba(0, 0, 0, 0.85)';
-        ctx.fillText(displayName, x + 4, y + noteHeight / 2 + 1);
+          // Dark shadow for high contrast on light velocity colors
+          ctx.fillStyle = isSelected ? '#ffffff' : 'rgba(0, 0, 0, 0.85)';
+          ctx.fillText(displayName, textOffsetX, y + noteHeight / 2 + 1);
 
-        // Main text
-        ctx.fillStyle = isSelected ? '#0f172a' : '#042f2e';
-        ctx.fillText(displayName, x + 3.5, y + noteHeight / 2);
+          // Main text
+          ctx.fillStyle = isSelected ? '#0f172a' : isLocked ? '#f0f9ff' : '#042f2e';
+          ctx.fillText(displayName, textOffsetX - 0.5, y + noteHeight / 2);
+        }
       }
     }
 
@@ -618,6 +723,13 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         initialSelectedNotes: new Map(),
       };
       onSeek(xToPpq(x));
+      return;
+    }
+
+    // Clicking a piano key on the left-hand keyboard auditions that pitch cleanly
+    if (x <= pianoKeysWidth) {
+      const clickedPitch = yToPitch(y);
+      synthAudioEngine.auditionNote(clickedPitch, 0.85, 0.35);
       return;
     }
 
@@ -1109,6 +1221,38 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     setContextMenu(null);
   }, [updateSelectedNoteIds]);
 
+  const handleSetLockSelected = useCallback(
+    (lockState: boolean) => {
+      const targetIds =
+        contextMenu?.hitNoteId !== undefined
+          ? selectedNoteIds.has(contextMenu.hitNoteId)
+            ? selectedNoteIds
+            : new Set([contextMenu.hitNoteId])
+          : selectedNoteIds;
+
+      if (targetIds.size > 0) {
+        if (onSnapshotBeforeChange) {
+          onSnapshotBeforeChange(lockState ? 'Lock Note(s)' : 'Unlock Note(s)');
+        }
+        const updated = notes.map((n) =>
+          targetIds.has(n.id) ? { ...n, locked: lockState } : n
+        );
+        onNotesChange(updated);
+      }
+      setContextMenu(null);
+    },
+    [contextMenu, selectedNoteIds, notes, onNotesChange, onSnapshotBeforeChange]
+  );
+
+  const handleUnlockAllLocked = useCallback(() => {
+    const hasAnyLocked = notes.some((n) => n.locked);
+    if (hasAnyLocked) {
+      if (onSnapshotBeforeChange) onSnapshotBeforeChange('Unlock All Notes');
+      onNotesChange(notes.map((n) => (n.locked ? { ...n, locked: false } : n)));
+    }
+    setContextMenu(null);
+  }, [notes, onNotesChange, onSnapshotBeforeChange]);
+
   // Keyboard Shortcuts: Cut, Copy, Paste, Delete, Backspace, Cmd/Ctrl+A, Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1191,7 +1335,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full select-none overflow-hidden rounded-md border-2 border-black/90 bg-[#070d09] crt-screen shadow-[inset_0_0_35px_rgba(0,0,0,0.95),inset_0_1px_1px_rgba(255,255,255,0.08)] focus:outline-none flex flex-col"
+      className="relative w-full flex-1 min-h-0 select-none overflow-hidden rounded-md border-2 border-black/90 bg-[#070d09] crt-screen shadow-[inset_0_0_35px_rgba(0,0,0,0.95),inset_0_1px_1px_rgba(255,255,255,0.08)] focus:outline-none flex flex-col"
       tabIndex={0}
     >
       {/* Bottom Floating Analog Scope Mini-Toolbar */}
@@ -1253,7 +1397,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       {/* Canvas */}
       <canvas
         ref={canvasRef}
-        className="w-full h-full cursor-crosshair"
+        className="w-full flex-1 min-h-0 block cursor-crosshair"
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -1262,159 +1406,205 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       />
 
       {/* Right-click Context Menu */}
-      {contextMenu && (
-        <div
-          id="piano-roll-context-menu"
-          className="fixed z-50 min-w-[210px] bg-[#1a1d29]/95 border border-slate-700/80 rounded-xl shadow-2xl p-1.5 backdrop-blur-md text-xs font-mono select-none animate-in fade-in zoom-in-95 duration-100"
-          style={{
-            left: `${Math.min(contextMenu.x, window.innerWidth - 230)}px`,
-            top: `${Math.min(contextMenu.y, window.innerHeight - 340)}px`,
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {/* Header Info Pill */}
-          <div className="px-2.5 py-1 text-[10px] text-slate-400 border-b border-slate-800 flex items-center justify-between font-semibold">
-            <span className="flex items-center gap-1 text-amber-300">
-              <Music className="w-3 h-3 text-amber-400" />
-              {getNoteName(contextMenu.targetPitch % 12)}{Math.floor(contextMenu.targetPitch / 12) - 1} · {contextMenu.targetPpq.toFixed(2)} PPQ
-            </span>
-            <button
-              onClick={() => setContextMenu(null)}
-              className="text-slate-500 hover:text-white p-0.5 rounded transition"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
+      {contextMenu && (() => {
+        const targetIds =
+          contextMenu.hitNoteId !== undefined
+            ? selectedNoteIds.has(contextMenu.hitNoteId)
+              ? selectedNoteIds
+              : new Set([contextMenu.hitNoteId])
+            : selectedNoteIds;
+        const targetNotes = notes.filter((n) => targetIds.has(n.id));
+        const hasTargetNotes = targetIds.size > 0;
+        const allTargetsLocked = targetNotes.length > 0 && targetNotes.every((n) => n.locked);
+        const someTargetsLocked = targetNotes.some((n) => n.locked);
 
-          <div className="py-1 flex flex-col gap-0.5">
-            {/* Add Note Button */}
-            <button
-              onClick={handleAddNote}
-              className="w-full px-2.5 py-1.5 text-left text-slate-100 hover:bg-sky-500 hover:text-slate-950 rounded-lg flex items-center gap-2 transition font-bold"
-            >
-              <Plus className="w-3.5 h-3.5 text-sky-400" />
-              <span>
-                Add Note ({getNoteName(contextMenu.targetPitch % 12)}{Math.floor(contextMenu.targetPitch / 12) - 1})
+        return (
+          <div
+            id="piano-roll-context-menu"
+            className="fixed z-50 min-w-[220px] max-h-[calc(100vh-16px)] overflow-y-auto bg-[#1a1d29]/95 border border-slate-700/80 rounded-xl shadow-2xl p-1.5 backdrop-blur-md text-xs font-mono select-none animate-in fade-in zoom-in-95 duration-100"
+            style={{
+              left: `${Math.min(contextMenu.x, window.innerWidth - 250)}px`,
+              top: `${Math.max(8, Math.min(contextMenu.y, window.innerHeight - 440))}px`,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header Info Pill */}
+            <div className="px-2.5 py-1 text-[10px] text-slate-400 border-b border-slate-800 flex items-center justify-between font-semibold">
+              <span className="flex items-center gap-1 text-amber-300">
+                <Music className="w-3 h-3 text-amber-400" />
+                {getNoteName(contextMenu.targetPitch % 12)}{Math.floor(contextMenu.targetPitch / 12) - 1} · {contextMenu.targetPpq.toFixed(2)} PPQ
               </span>
-            </button>
+              <button
+                onClick={() => setContextMenu(null)}
+                className="text-slate-500 hover:text-white p-0.5 rounded transition"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
 
-            <div className="h-px bg-slate-800 my-1" />
+            <div className="py-1 flex flex-col gap-0.5">
+              {/* Add Note & Delete Note */}
+              <button
+                onClick={handleAddNote}
+                className="w-full px-2.5 py-1.5 text-left text-slate-100 hover:bg-sky-500 hover:text-slate-950 rounded-lg flex items-center gap-2 transition font-bold"
+              >
+                <Plus className="w-3.5 h-3.5 text-sky-400" />
+                <span>
+                  Add Note ({getNoteName(contextMenu.targetPitch % 12)}{Math.floor(contextMenu.targetPitch / 12) - 1})
+                </span>
+              </button>
 
-            {/* Cut / Copy / Paste Options */}
-            <button
-              onClick={handleCut}
-              disabled={contextMenu.hitNoteId === undefined && selectedNoteIds.size === 0}
-              className="w-full px-2.5 py-1.5 text-left text-slate-200 hover:bg-slate-700/80 disabled:opacity-40 disabled:hover:bg-transparent rounded-lg flex items-center justify-between transition"
-            >
-              <span className="flex items-center gap-2">
-                <Scissors className="w-3.5 h-3.5 text-slate-400" />
-                <span>Cut</span>
-              </span>
-              <span className="text-[10px] text-slate-500 font-mono">⌘X</span>
-            </button>
-
-            <button
-              onClick={handleCopy}
-              disabled={contextMenu.hitNoteId === undefined && selectedNoteIds.size === 0}
-              className="w-full px-2.5 py-1.5 text-left text-slate-200 hover:bg-slate-700/80 disabled:opacity-40 disabled:hover:bg-transparent rounded-lg flex items-center justify-between transition"
-            >
-              <span className="flex items-center gap-2">
-                <Copy className="w-3.5 h-3.5 text-slate-400" />
-                <span>Copy</span>
-              </span>
-              <span className="text-[10px] text-slate-500 font-mono">⌘C</span>
-            </button>
-
-            <button
-              onClick={() => handlePaste()}
-              disabled={clipboardRef.current.length === 0}
-              className="w-full px-2.5 py-1.5 text-left text-slate-200 hover:bg-slate-700/80 disabled:opacity-40 disabled:hover:bg-transparent rounded-lg flex items-center justify-between transition"
-            >
-              <span className="flex items-center gap-2">
-                <Clipboard className="w-3.5 h-3.5 text-slate-400" />
-                <span>Paste</span>
-              </span>
-              <span className="text-[10px] text-slate-500 font-mono">⌘V</span>
-            </button>
-
-            {/* Note manipulation options if hit note or selection exists */}
-            {(contextMenu.hitNoteId !== undefined || selectedNoteIds.size > 0) && (
-              <>
-                <div className="h-px bg-slate-800 my-1" />
-
-                <button
-                  onClick={handleDuplicateSelected}
-                  className="w-full px-2.5 py-1.5 text-left text-slate-300 hover:bg-slate-700/80 rounded-lg flex items-center gap-2 transition"
-                >
-                  <Copy className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Duplicate Note{selectedNoteIds.size > 1 ? `s (${selectedNoteIds.size})` : ''}</span>
-                </button>
-
-                <button
-                  onClick={() => handleTransposeOctave(12)}
-                  className="w-full px-2.5 py-1.5 text-left text-slate-300 hover:bg-slate-700/80 rounded-lg flex items-center gap-2 transition"
-                >
-                  <ArrowUp className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Octave Up (+12 st)</span>
-                </button>
-
-                <button
-                  onClick={() => handleTransposeOctave(-12)}
-                  className="w-full px-2.5 py-1.5 text-left text-slate-300 hover:bg-slate-700/80 rounded-lg flex items-center gap-2 transition"
-                >
-                  <ArrowDown className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Octave Down (-12 st)</span>
-                </button>
-
-                <div className="h-px bg-slate-800 my-1" />
-
-                {/* Quick Note Duration / Length Presets */}
-                <div className="px-2.5 py-1 flex items-center justify-between">
-                  <span className="text-[10px] text-amber-400 font-mono font-bold uppercase tracking-wider">
-                    Note Length
-                  </span>
-                  <span className="text-[9px] text-slate-400 font-mono">
-                    or drag note edge
-                  </span>
-                </div>
-                <div className="grid grid-cols-4 gap-1 px-1.5 pb-1">
-                  {[
-                    { label: '1/16', ppq: 0.25 },
-                    { label: '1/8', ppq: 0.5 },
-                    { label: '1/4', ppq: 1.0 },
-                    { label: '1/2', ppq: 2.0 },
-                    { label: '1 Bar', ppq: 4.0 },
-                    { label: '2 Bars', ppq: 8.0 },
-                    { label: '2x ⇥', factor: 2.0 },
-                    { label: '0.5x ⇤', factor: 0.5 },
-                  ].map((item, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => {
-                        if (item.factor) handleMultiplyDuration(item.factor);
-                        else if (item.ppq) handleSetDuration(item.ppq);
-                      }}
-                      className="px-1.5 py-1 text-[9.5px] font-mono font-bold bg-[#14161b] hover:bg-amber-500 hover:text-black text-neutral-300 rounded border border-neutral-700/80 transition text-center shadow-xs"
-                      title={item.factor ? `Multiply duration by ${item.factor}x` : `Set duration to ${item.label} (${item.ppq} PPQ)`}
-                    >
-                      {item.label}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="h-px bg-slate-800 my-1" />
-
-                <button
-                  onClick={handleDeleteSelected}
-                  className="w-full px-2.5 py-1.5 text-left text-rose-400 hover:bg-rose-500/20 rounded-lg flex items-center gap-2 transition font-semibold"
-                >
+              <button
+                onClick={handleDeleteSelected}
+                disabled={!hasTargetNotes}
+                className="w-full px-2.5 py-1.5 text-left text-rose-400 hover:bg-rose-500/20 disabled:opacity-35 disabled:hover:bg-transparent rounded-lg flex items-center justify-between gap-2 transition font-semibold"
+                title="Delete selected or right-clicked note(s)"
+              >
+                <span className="flex items-center gap-2">
                   <Trash2 className="w-3.5 h-3.5 text-rose-400" />
                   <span>
-                    Delete Note{selectedNoteIds.size > 1 ? `s (${selectedNoteIds.size})` : ''}
+                    Delete Note{targetIds.size > 1 ? `s (${targetIds.size})` : ''}
                   </span>
-                </button>
-              </>
-            )}
+                </span>
+                <span className="text-[10px] text-rose-400/70 font-mono">⌫</span>
+              </button>
+
+              <div className="h-px bg-slate-800 my-1" />
+
+              {/* Cut / Copy / Paste Options */}
+              <button
+                onClick={handleCut}
+                disabled={!hasTargetNotes}
+                className="w-full px-2.5 py-1.5 text-left text-slate-200 hover:bg-slate-700/80 disabled:opacity-40 disabled:hover:bg-transparent rounded-lg flex items-center justify-between transition"
+              >
+                <span className="flex items-center gap-2">
+                  <Scissors className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Cut</span>
+                </span>
+                <span className="text-[10px] text-slate-500 font-mono">⌘X</span>
+              </button>
+
+              <button
+                onClick={handleCopy}
+                disabled={!hasTargetNotes}
+                className="w-full px-2.5 py-1.5 text-left text-slate-200 hover:bg-slate-700/80 disabled:opacity-40 disabled:hover:bg-transparent rounded-lg flex items-center justify-between transition"
+              >
+                <span className="flex items-center gap-2">
+                  <Copy className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Copy</span>
+                </span>
+                <span className="text-[10px] text-slate-500 font-mono">⌘C</span>
+              </button>
+
+              <button
+                onClick={() => handlePaste()}
+                disabled={clipboardRef.current.length === 0}
+                className="w-full px-2.5 py-1.5 text-left text-slate-200 hover:bg-slate-700/80 disabled:opacity-40 disabled:hover:bg-transparent rounded-lg flex items-center justify-between transition"
+              >
+                <span className="flex items-center gap-2">
+                  <Clipboard className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Paste</span>
+                </span>
+                <span className="text-[10px] text-slate-500 font-mono">⌘V</span>
+              </button>
+
+              {/* Note manipulation options if hit note or selection exists */}
+              {hasTargetNotes && (
+                <>
+                  <div className="h-px bg-slate-800 my-1" />
+
+                  {!allTargetsLocked && (
+                    <button
+                      onClick={() => handleSetLockSelected(true)}
+                      className="w-full px-2.5 py-1.5 text-left text-sky-300 hover:bg-sky-500/20 rounded-lg flex items-center justify-between gap-2 transition font-semibold"
+                      title="Lock selected notes so they are preserved during random generation"
+                    >
+                      <span className="flex items-center gap-2">
+                        <Lock className="w-3.5 h-3.5 text-sky-400" />
+                        <span>
+                          Lock Note{targetIds.size > 1 ? `s (${targetIds.size})` : ''}
+                        </span>
+                      </span>
+                      <span className="text-[9px] text-sky-400/80 uppercase">Keep on Gen</span>
+                    </button>
+                  )}
+
+                  {someTargetsLocked && (
+                    <button
+                      onClick={() => handleSetLockSelected(false)}
+                      className="w-full px-2.5 py-1.5 text-left text-amber-300 hover:bg-amber-500/20 rounded-lg flex items-center gap-2 transition font-semibold"
+                      title="Unlock selected notes so random generation replaces them normally"
+                    >
+                      <Unlock className="w-3.5 h-3.5 text-amber-400" />
+                      <span>
+                        Unlock Note{targetIds.size > 1 ? `s (${targetIds.size})` : ''}
+                      </span>
+                    </button>
+                  )}
+
+                  <div className="h-px bg-slate-800 my-1" />
+
+                  <button
+                    onClick={handleDuplicateSelected}
+                    className="w-full px-2.5 py-1.5 text-left text-slate-300 hover:bg-slate-700/80 rounded-lg flex items-center gap-2 transition"
+                  >
+                    <Copy className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Duplicate Note{targetIds.size > 1 ? `s (${targetIds.size})` : ''}</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleTransposeOctave(12)}
+                    className="w-full px-2.5 py-1.5 text-left text-slate-300 hover:bg-slate-700/80 rounded-lg flex items-center gap-2 transition"
+                  >
+                    <ArrowUp className="w-3.5 h-3.5 text-slate-400" />
+                    <span>Octave Up (+12 st)</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleTransposeOctave(-12)}
+                    className="w-full px-2.5 py-1.5 text-left text-slate-300 hover:bg-slate-700/80 rounded-lg flex items-center gap-2 transition"
+                  >
+                    <ArrowDown className="w-3.5 h-3.5 text-slate-400" />
+                    <span>Octave Down (-12 st)</span>
+                  </button>
+
+                  <div className="h-px bg-slate-800 my-1" />
+
+                  {/* Quick Note Duration / Length Presets */}
+                  <div className="px-2.5 py-1 flex items-center justify-between">
+                    <span className="text-[10px] text-amber-400 font-mono font-bold uppercase tracking-wider">
+                      Note Length
+                    </span>
+                    <span className="text-[9px] text-slate-400 font-mono">
+                      or drag note edge
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1 px-1.5 pb-1">
+                    {[
+                      { label: '1/16', ppq: 0.25 },
+                      { label: '1/8', ppq: 0.5 },
+                      { label: '1/4', ppq: 1.0 },
+                      { label: '1/2', ppq: 2.0 },
+                      { label: '1 Bar', ppq: 4.0 },
+                      { label: '2 Bars', ppq: 8.0 },
+                      { label: '2x ⇥', factor: 2.0 },
+                      { label: '0.5x ⇤', factor: 0.5 },
+                    ].map((item, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => {
+                          if (item.factor) handleMultiplyDuration(item.factor);
+                          else if (item.ppq) handleSetDuration(item.ppq);
+                        }}
+                        className="px-1.5 py-1 text-[9.5px] font-mono font-bold bg-[#14161b] hover:bg-amber-500 hover:text-black text-neutral-300 rounded border border-neutral-700/80 transition text-center shadow-xs"
+                        title={item.factor ? `Multiply duration by ${item.factor}x` : `Set duration to ${item.label} (${item.ppq} PPQ)`}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
 
             <div className="h-px bg-slate-800 my-1" />
 
@@ -1426,6 +1616,16 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
               <span>Select All Notes</span>
             </button>
 
+            {notes.some((n) => n.locked) && (
+              <button
+                onClick={handleUnlockAllLocked}
+                className="w-full px-2.5 py-1.5 text-left text-sky-300 hover:bg-sky-500/15 rounded-lg flex items-center gap-2 transition"
+              >
+                <Unlock className="w-3.5 h-3.5 text-sky-400" />
+                <span>Unlock All Locked ({notes.filter((n) => n.locked).length})</span>
+              </button>
+            )}
+
             {selectedNoteIds.size > 0 && (
               <button
                 onClick={handleDeselectAll}
@@ -1435,9 +1635,10 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
                 <span>Deselect ({selectedNoteIds.size})</span>
               </button>
             )}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 };

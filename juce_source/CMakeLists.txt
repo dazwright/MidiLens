@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # macOS configuration: target macOS 11.0+ and native architecture for local builds
 if(APPLE)
+    enable_language(OBJCXX)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS deployment target")
 endif()
 
@@ -40,13 +41,14 @@ juce_add_binary_data(MidiLensWebUIData
 # Declare JUCE Plugin with AU, VST3, and Standalone
 # NOTE: For Logic Pro MIDI FX, FORMATS must include AU, and the target must be configured with IS_MIDI_EFFECT TRUE.
 juce_add_plugin(MidiPreviewer
-    COMPANY_NAME                "AudioDSP"
+    COMPANY_NAME                "Daz Corp"
+    BUNDLE_ID                   "com.dazcorp.midilens"
     IS_SYNTH                    FALSE
     NEEDS_MIDI_INPUT            TRUE
     NEEDS_MIDI_OUTPUT           TRUE
     IS_MIDI_EFFECT              TRUE
     EDITOR_WANTS_KEYBOARD_FOCUS TRUE
-    PLUGIN_MANUFACTURER_CODE    "Adsp"
+    PLUGIN_MANUFACTURER_CODE    "DazC"
     PLUGIN_CODE                 "MPrv"
     FORMATS                     AU VST3 Standalone
     PRODUCT_NAME                "MidiLens"
@@ -68,7 +70,13 @@ target_sources(MidiPreviewer
         Source/MidiFileExporter.cpp
         Source/ArpEngine.h
         Source/MidiLensLookAndFeel.h
+        Source/CloudFileReader.h
 )
+
+if(APPLE)
+    target_sources(MidiPreviewer PRIVATE Source/CloudFileReader.mm)
+    set_source_files_properties(Source/CloudFileReader.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+endif()
 
 target_compile_definitions(MidiPreviewer
     PUBLIC
@@ -106,7 +114,7 @@ target_link_libraries(MidiPreviewer
 # Custom configuration for macOS AU WebKit linkage & hardened runtime compatibility
 if(APPLE)
     target_compile_options(MidiPreviewer PRIVATE -Wno-deprecated-declarations -Wno-nontrivial-memcall)
-    target_link_libraries(MidiPreviewer PRIVATE "-framework WebKit")
+    target_link_libraries(MidiPreviewer PRIVATE "-framework WebKit" "-framework Foundation" "-framework AppKit")
     set_target_properties(MidiPreviewer PROPERTIES
         XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME "YES"
     )

@@ -64,7 +64,8 @@ export function uint8ArrayToBase64(bytes: Uint8Array): string {
 }
 
 export function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  const binary = atob(base64);
+  const clean = base64.replace(/\s+/g, '');
+  const binary = atob(clean);
   const len = binary.length;
   const bytes = new Uint8Array(len);
   for (let i = 0; i < len; i++) {

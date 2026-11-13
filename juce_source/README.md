@@ -91,7 +91,7 @@ killall -9 AudioComponentRegistrar
 Validate the plugin against Apple's strict Audio Unit test suite:
 ```bash
 # Syntax: auval -v <type> <subtype> <manufacturer>
-auval -v aumf MPrv Adsp
+auval -v aumf MPrv DazC
 ```
 
 **Expected Successful Output:**
@@ -106,7 +106,7 @@ AU VALIDATION SUCCEEDED FOR 1 AUDIO UNIT
 1. Open or create a Logic Pro project.
 2. Create a **Software Instrument Track** (e.g., Alchemy, Retro Synth, or Sampler).
 3. In the Inspector Channel Strip, locate the green/blue **MIDI FX** slot directly above the instrument name.
-4. Click the MIDI FX slot -> navigate to **Audio Units -> AudioDSP -> MIDI Previewer**.
+4. Click the MIDI FX slot -> navigate to **Audio Units -> Daz Corp -> MidiLens**.
 5. The plugin UI will open. Drag any `.mid` file into the canvas or click "Load Demo Groove" to start auditioning!
 
 ---
@@ -168,7 +168,7 @@ cp -R "build/MidiPreviewer_artefacts/Release/VST3/MidiLens.vst3" pkg_root/Librar
 
 # Build installable .pkg installer
 pkgbuild --root pkg_root \
-         --identifier com.audiodsp.midilens.pkg \
+         --identifier com.dazcorp.midilens.pkg \
          --version 1.0.0 \
          --install-location / \
          MidiLens-macOS-Installer.pkg
