@@ -1,0 +1,83 @@
+name: Build macOS .pkg Installer
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+jobs:
+  build-macos-pkg:
+    name: Build MidiLens Universal (.pkg)
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js (if full repo)
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install web dependencies & bundle JUCE WebUI
+        if: hashFiles('package.json') != ''
+        run: |
+          npm install --no-audit --no-fund
+          node scripts/build-juce-webui.mjs
+
+      - name: Configure CMake (Universal arm64 + x86_64)
+        run: |
+          if [ -f "juce_source/CMakeLists.txt" ]; then
+            SRC_DIR="juce_source"
+          else
+            SRC_DIR="."
+          fi
+          cmake -S "$SRC_DIR" -B build -G Xcode \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="11.0"
+
+      - name: Compile AU, VST3 & Standalone
+        run: |
+          cmake --build build --config Release \
+            --target MidiPreviewer_AU MidiPreviewer_VST3 MidiPreviewer_Standalone
+
+      - name: Ad-hoc sign plugin bundles
+        run: |
+          codesign --force --deep --sign - "build/MidiPreviewer_artefacts/Release/AU/MidiLens.component"
+          codesign --force --deep --sign - "build/MidiPreviewer_artefacts/Release/VST3/MidiLens.vst3"
+          codesign --force --deep --sign - "build/MidiPreviewer_artefacts/Release/Standalone/MidiLens.app"
+
+      - name: Create postinstall script & Package .pkg Installer
+        run: |
+          mkdir -p pkg_scripts
+          printf '%s\n' '#!/bin/bash' 'killall -9 AudioComponentRegistrar AUHostingServiceXPC AUHostingServiceXPC_arrow 2>/dev/null || true' 'exit 0' > pkg_scripts/postinstall
+          chmod +x pkg_scripts/postinstall
+
+          mkdir -p pkg_root/Library/Audio/Plug-Ins/Components
+          mkdir -p pkg_root/Library/Audio/Plug-Ins/VST3
+          mkdir -p pkg_root/Applications
+
+          cp -R "build/MidiPreviewer_artefacts/Release/AU/MidiLens.component" pkg_root/Library/Audio/Plug-Ins/Components/
+          cp -R "build/MidiPreviewer_artefacts/Release/VST3/MidiLens.vst3" pkg_root/Library/Audio/Plug-Ins/VST3/
+          cp -R "build/MidiPreviewer_artefacts/Release/Standalone/MidiLens.app" pkg_root/Applications/
+
+          pkgbuild \
+            --root pkg_root \
+            --scripts pkg_scripts \
+            --identifier com.dazcorp.midilens.pkg \
+            --version 1.0.0 \
+            --install-location / \
+            MidiLens-Component.pkg
+
+          productbuild \
+            --package MidiLens-Component.pkg \
+            MidiLens-macOS-Universal.pkg
+
+      - name: Upload .pkg Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MidiLens-macOS-Installer
+          path: MidiLens-macOS-Universal.pkg
