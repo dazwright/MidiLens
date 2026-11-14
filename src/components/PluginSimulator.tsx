@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { MidiSequence, PluginParameters, KeyResult, ScannedMidiFile, ScaleType, QuantizeGrid } from '../types';
+import { MidiSequence, PluginParameters, KeyResult, ScannedMidiFile, ScaleType, QuantizeGrid, LibraryFileMeta } from '../types';
 import { PRESET_SEQUENCES, parseMidiFile, serializeMidiFile } from '../midiParser';
 import { analyzeKeyFromNotes, calculateSemitoneOffsetToTarget, getNoteName } from '../keyDetection';
 import {
   SCALE_DEFINITIONS,
   QUANTIZE_GRID_DIVISIONS,
   snapPitchToScale,
-  quantizePpq,
   humanizeNotesVelocity,
   randomizeNotesVelocityRange,
   humanizeNotesTiming,
@@ -25,8 +24,23 @@ import { PresetDrawer } from './PresetDrawer';
 import { ArpeggiatorControls } from './ArpeggiatorControls';
 import { MidiExportModal } from './MidiExportModal';
 import { arpeggiateNotes } from '../arpUtils';
-import { LibraryModal } from './LibraryModal';
+import { LibraryModal, getLibraryFileKey } from './LibraryModal';
 import { generateMusicalPattern, GeneratorPatternType } from '../midiGenerator';
+import {
+  quantizeNotesWithStrength,
+  applySwingToNotes,
+  applyLegatoAndFixOverlaps,
+  applyStaccatoToNotes,
+  applyStrumToNotes,
+  scaleSequenceTimingDestructive,
+  invertChords,
+  applyDrop2Voicing,
+  applyOpenVoicing,
+  reversePatternNotes,
+  mirrorPitchNotes,
+  rotatePatternNotes,
+  extractLayerNotes,
+} from '../midiTransform';
 import {
   isJuceNative,
   emitToJuce,
@@ -42,18 +56,15 @@ import {
   Upload,
   Download,
   Music,
-  Sliders,
   Sparkles,
   Zap,
   Gauge,
   Radio,
   FolderSearch,
-  Search,
   Lock,
   Unlock,
   Wand2,
   X,
-  FileMusic,
   ChevronLeft,
   ChevronRight,
   FolderOpen,
@@ -63,12 +74,13 @@ import {
   Redo2,
   Loader2,
   AlertCircle,
-  StopCircle,
   Dices,
   Minus,
   Plus,
   CheckSquare,
   GripVertical,
+  Star,
+  SlidersHorizontal,
 } from 'lucide-react';
 
 interface HistorySnapshot {
@@ -96,6 +108,8 @@ export const PluginSimulator: React.FC = () => {
     velocityOffset: FACTORY_PRESETS[0].settings.velocityOffset,
     syncMode: 'daw',
     loop: true,
+    loopStartPpq: 0,
+    loopEndPpq: null,
     targetKeyRoot: 0,
     targetKeyIsMinor: true,
     targetScaleType: 'minor',
@@ -105,6 +119,7 @@ export const PluginSimulator: React.FC = () => {
     scaleType: FACTORY_PRESETS[0].settings.scaleType,
     scaleLock: FACTORY_PRESETS[0].settings.scaleLock,
     quantizeGrid: FACTORY_PRESETS[0].settings.quantizeGrid,
+    quantizeStrength: FACTORY_PRESETS[0].settings.quantizeStrength ?? 100,
     arpEnabled: false,
     arpMode: 'up',
     arpRate: '1/16',
@@ -117,12 +132,39 @@ export const PluginSimulator: React.FC = () => {
   // Panel & Modal visibility toggles
   const [showArpPanel, setShowArpPanel] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [showTransformPanel, setShowTransformPanel] = useState(false);
+  const [swingGrid, setSwingGrid] = useState<'1/8' | '1/16'>('1/16');
+  const [swingPercent, setSwingPercent] = useState(55);
+  const [strumMs, setStrumMs] = useState(25);
 
   const [keyResult, setKeyResult] = useState<KeyResult>(() => analyzeKeyFromNotes(PRESET_SEQUENCES[0].notes));
   const [isDraggingFile, setIsDraggingFile] = useState(false);
 
   // Folder scanning state (non-blocking chunked scan & streaming progress)
   const [scannedFiles, setScannedFiles] = useState<ScannedMidiFile[]>([]);
+  const scannedFilesRef = useRef<ScannedMidiFile[]>([]);
+  useEffect(() => {
+    scannedFilesRef.current = scannedFiles;
+  }, [scannedFiles]);
+
+  // Persistent Library Favourites, Custom Tags & Detected Key/BPM Metadata
+  const [libraryMeta, setLibraryMeta] = useState<Record<string, LibraryFileMeta>>(() => {
+    try {
+      const raw = localStorage.getItem('midilens_library_meta_v1');
+      if (raw) return JSON.parse(raw);
+    } catch {
+      // ignore storage read error
+    }
+    return {};
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('midilens_library_meta_v1', JSON.stringify(libraryMeta));
+    } catch {
+      // ignore storage quota error
+    }
+  }, [libraryMeta]);
+
   const [savedFolderPaths, setSavedFolderPaths] = useState<string[]>([]);
   const [showFolderModal, setShowFolderModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -251,6 +293,9 @@ export const PluginSimulator: React.FC = () => {
       scaleType: s.scaleType,
       scaleLock: s.scaleLock,
       quantizeGrid: s.quantizeGrid,
+      quantizeStrength: s.quantizeStrength ?? 100,
+      loopStartPpq: 0,
+      loopEndPpq: null,
       transpose: s.transpose,
       speedMultiplier: s.speedMultiplier,
       velocityScale: s.velocityScale,
@@ -285,7 +330,7 @@ export const PluginSimulator: React.FC = () => {
     scaleType: params.scaleType,
     scaleLock: params.scaleLock,
     quantizeGrid: params.quantizeGrid,
-    quantizeStrength: 100,
+    quantizeStrength: params.quantizeStrength ?? 100,
     humanizeVelRange,
     randomMinVel,
     randomMaxVel,
@@ -351,6 +396,8 @@ export const PluginSimulator: React.FC = () => {
         velocityOffset: params.velocityOffset,
         syncMode: params.syncMode,
         loop: params.loop,
+        loopStartPpq: params.loopStartPpq ?? 0,
+        loopEndPpq: params.loopEndPpq ?? -1,
         manualTempo: sequence.bpm,
       });
     }
@@ -527,6 +574,7 @@ export const PluginSimulator: React.FC = () => {
         synthAudioEngine.stop();
         setPlayheadPpq(0);
         setSelectedNoteIds(new Set());
+        setParams((prev) => ({ ...prev, loopStartPpq: 0, loopEndPpq: null }));
         if (payload.sourceType === 'custom') {
           setActiveSourceType('custom');
           setCurrentScannedFileIdx(-1);
@@ -535,6 +583,25 @@ export const PluginSimulator: React.FC = () => {
           if (typeof payload.index === 'number' && payload.index >= 0) {
             setCurrentScannedFileIdx(payload.index);
           }
+          const matchedFile =
+            (typeof payload.index === 'number' && scannedFilesRef.current[payload.index]) ||
+            (payload.fullPath
+              ? scannedFilesRef.current.find((f) => f.nativePath === payload.fullPath)
+              : undefined);
+          const fileKey = matchedFile
+            ? getLibraryFileKey(matchedFile)
+            : String(payload.fullPath || fileName);
+          const detected = analyzeKeyFromNotes(parsed.notes);
+          setLibraryMeta((prev) => ({
+            ...prev,
+            [fileKey]: {
+              ...prev[fileKey],
+              detectedKey: detected.keyName,
+              detectedRoot: detected.rootPitch,
+              detectedIsMinor: detected.isMinor,
+              bpm: parsed.bpm,
+            },
+          }));
         }
         setSequence(parsed);
         if (parsed.notes.length === 0) {
@@ -602,6 +669,9 @@ export const PluginSimulator: React.FC = () => {
           if (typeof parsedState.currentScannedFileIdx === 'number') {
             setCurrentScannedFileIdx(parsedState.currentScannedFileIdx);
           }
+          if (parsedState.libraryMeta && typeof parsedState.libraryMeta === 'object') {
+            setLibraryMeta((prev) => ({ ...parsedState.libraryMeta, ...prev }));
+          }
         } catch {
           // ignore malformed state JSON
         }
@@ -633,11 +703,56 @@ export const PluginSimulator: React.FC = () => {
           activePresetId: activeLensPreset.id,
           activeSourceType,
           currentScannedFileIdx,
+          libraryMeta,
         }),
       });
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [sequence, params, activeLensPreset.id, activeSourceType, currentScannedFileIdx]);
+  }, [sequence, params, activeLensPreset.id, activeSourceType, currentScannedFileIdx, libraryMeta]);
+
+  const handleToggleFavorite = useCallback((fileKey: string) => {
+    setLibraryMeta((prev) => {
+      const existing = prev[fileKey] || {};
+      return {
+        ...prev,
+        [fileKey]: {
+          ...existing,
+          favorite: !existing.favorite,
+        },
+      };
+    });
+  }, []);
+
+  const handleAddTag = useCallback((fileKey: string, rawTag: string) => {
+    const clean = rawTag.trim();
+    if (!clean) return;
+    setLibraryMeta((prev) => {
+      const existing = prev[fileKey] || {};
+      const currentTags = existing.tags || [];
+      if (currentTags.some((t) => t.toLowerCase() === clean.toLowerCase())) return prev;
+      return {
+        ...prev,
+        [fileKey]: {
+          ...existing,
+          tags: [...currentTags, clean],
+        },
+      };
+    });
+  }, []);
+
+  const handleRemoveTag = useCallback((fileKey: string, tagToRemove: string) => {
+    setLibraryMeta((prev) => {
+      const existing = prev[fileKey];
+      if (!existing || !existing.tags) return prev;
+      return {
+        ...prev,
+        [fileKey]: {
+          ...existing,
+          tags: existing.tags.filter((t) => t !== tagToRemove),
+        },
+      };
+    });
+  }, []);
 
   // Apply current arpeggiator settings directly to sequence notes
   const handleApplyArpToSequence = useCallback(() => {
@@ -678,7 +793,8 @@ export const PluginSimulator: React.FC = () => {
 
   const stopPlayback = () => {
     synthAudioEngine.stop();
-    setPlayheadPpq(0);
+    const startPpq = params.loopStartPpq ?? 0;
+    setPlayheadPpq(startPpq);
   };
 
   const handleSeek = (ppq: number) => {
@@ -984,18 +1100,114 @@ export const PluginSimulator: React.FC = () => {
     setParams((prev) => ({ ...prev, transpose: semitones }));
   };
 
-  // Quantize Timing to Grid
+  // Quantize Timing to Grid (with Strength %)
   const applyTimingQuantize = () => {
-    pushHistorySnapshot(`Quantize Timing (${params.quantizeGrid})`);
-    const updated = sequence.notes.map((n) => {
-      const qStart = quantizePpq(n.startPpq, params.quantizeGrid);
-      const qDuration = Math.max(
-        QUANTIZE_GRID_DIVISIONS[params.quantizeGrid].ppq,
-        quantizePpq(n.durationPpq, params.quantizeGrid)
-      );
-      return { ...n, startPpq: qStart, durationPpq: qDuration };
-    });
+    const strength = params.quantizeStrength ?? 100;
+    pushHistorySnapshot(`Quantise Timing (${params.quantizeGrid} @ ${strength}%)`);
+    const updated = quantizeNotesWithStrength(sequence.notes, selectedNoteIds, params.quantizeGrid, strength);
     setSequence((s) => ({ ...s, notes: updated }));
+  };
+
+  // Swing / Shuffle (%)
+  const applySwing = () => {
+    pushHistorySnapshot(`Swing ${swingGrid} (${swingPercent}%)`);
+    const updated = applySwingToNotes(sequence.notes, selectedNoteIds, swingGrid, swingPercent);
+    setSequence((s) => ({ ...s, notes: updated }));
+  };
+
+  // Legato / Overlap Fix
+  const applyLegato = () => {
+    pushHistorySnapshot('Legato / Fix Overlaps');
+    const updated = applyLegatoAndFixOverlaps(sequence.notes, selectedNoteIds, sequence.totalLengthPpq);
+    setSequence((s) => ({ ...s, notes: updated }));
+  };
+
+  // Staccato (50% duration trim)
+  const applyStaccato = () => {
+    pushHistorySnapshot('Staccato (50%)');
+    const updated = applyStaccatoToNotes(sequence.notes, selectedNoteIds, 0.5);
+    setSequence((s) => ({ ...s, notes: updated }));
+  };
+
+  // Strum / Flam chord notes
+  const applyStrum = (direction: 'up' | 'down') => {
+    pushHistorySnapshot(`Strum ${direction === 'up' ? 'Up' : 'Down'} (${strumMs}ms)`);
+    const updated = applyStrumToNotes(sequence.notes, selectedNoteIds, direction, strumMs, sequence.bpm);
+    setSequence((s) => ({ ...s, notes: updated }));
+  };
+
+  // Destructive Half/Double Speed Stretch/Compress (updates actual PPQ positions & loop length for DAW drag)
+  const applyDestructiveSpeed = (factor: 0.5 | 2.0) => {
+    const label = factor === 0.5 ? '2× Double-Time Compress' : '0.5× Half-Time Stretch';
+    pushHistorySnapshot(label);
+    const scaled = scaleSequenceTimingDestructive(sequence, factor);
+    setSequence(scaled);
+    setParams((prev) => ({
+      ...prev,
+      loopStartPpq: prev.loopStartPpq ? Math.min(scaled.totalLengthPpq - 0.5, prev.loopStartPpq * factor) : 0,
+      loopEndPpq:
+        prev.loopEndPpq !== null && prev.loopEndPpq !== undefined
+          ? Math.min(scaled.totalLengthPpq, prev.loopEndPpq * factor)
+          : null,
+    }));
+    setNotificationBanner(
+      factor === 0.5
+        ? '✓ Compressed notes 0.5× (Double-Time) onto DAW grid — ready to drag to Logic Pro.'
+        : '✓ Stretched notes 2× (Half-Time) onto DAW grid — ready to drag to Logic Pro.'
+    );
+    window.setTimeout(() => setNotificationBanner(null), 3500);
+  };
+
+  // Chord Voicing Tools: Invert Up/Down, Drop-2, Open Voicing
+  const applyChordInvert = (direction: 'up' | 'down') => {
+    pushHistorySnapshot(`Invert Chords ${direction === 'up' ? 'Up' : 'Down'}`);
+    const updated = invertChords(sequence.notes, selectedNoteIds, direction);
+    setSequence((s) => ({ ...s, notes: updated }));
+  };
+
+  const applyDrop2 = () => {
+    pushHistorySnapshot('Drop-2 Voicing');
+    const updated = applyDrop2Voicing(sequence.notes, selectedNoteIds);
+    setSequence((s) => ({ ...s, notes: updated }));
+  };
+
+  const applyOpenVoice = () => {
+    pushHistorySnapshot('Toggle Open/Close Voicing');
+    const updated = applyOpenVoicing(sequence.notes, selectedNoteIds);
+    setSequence((s) => ({ ...s, notes: updated }));
+  };
+
+  // Reverse / Mirror / Shift-Rotate Pattern
+  const applyReversePattern = () => {
+    pushHistorySnapshot('Reverse Pattern (Retrograde)');
+    const updated = reversePatternNotes(sequence.notes, selectedNoteIds, sequence.totalLengthPpq);
+    setSequence((s) => ({ ...s, notes: updated }));
+  };
+
+  const applyMirrorPattern = () => {
+    pushHistorySnapshot('Mirror Pitches (Invert)');
+    const updated = mirrorPitchNotes(
+      sequence.notes,
+      selectedNoteIds,
+      params.scaleRoot,
+      params.scaleType,
+      params.scaleLock
+    );
+    setSequence((s) => ({ ...s, notes: updated }));
+  };
+
+  const applyRotatePattern = (stepPpq: number) => {
+    pushHistorySnapshot(`Shift Pattern ${stepPpq < 0 ? 'Left' : 'Right'} 1/16`);
+    const updated = rotatePatternNotes(sequence.notes, selectedNoteIds, stepPpq, sequence.totalLengthPpq);
+    setSequence((s) => ({ ...s, notes: updated }));
+  };
+
+  // Bass-Root / Topline Extraction
+  const applyExtractLayer = (mode: 'bass' | 'topline') => {
+    pushHistorySnapshot(mode === 'bass' ? 'Extract Bass-Root Layer' : 'Extract Topline Melody');
+    const updated = extractLayerNotes(sequence.notes, selectedNoteIds, mode);
+    setSequence((s) => ({ ...s, notes: updated }));
+    setSelectedNoteIds(new Set());
   };
 
   // Quantize Pitch to Selected Scale
@@ -1210,6 +1422,7 @@ export const PluginSimulator: React.FC = () => {
     synthAudioEngine.stop();
     setPlayheadPpq(0);
     setSelectedNoteIds(new Set());
+    setParams((prev) => ({ ...prev, loopStartPpq: 0, loopEndPpq: null }));
     setSequence(newSeq);
 
     // Sync active preset and target scale parameters to this groove if matched
@@ -1227,7 +1440,7 @@ export const PluginSimulator: React.FC = () => {
 
   const loadScannedItem = (item: ScannedMidiFile, idx?: number) => {
     if (item.file) {
-      loadMidiFromFile(item.file);
+      loadMidiFromFile(item.file, item);
     } else if (item.nativePath && isJuceNative()) {
       setNotificationBanner(`⏳ Loading "${item.name}" (syncing from cloud if needed)...`);
       emitToJuce('nativeLoadFile', {
@@ -1495,7 +1708,7 @@ export const PluginSimulator: React.FC = () => {
     setTimeout(processNextChunk, 10);
   };
 
-  const loadMidiFromFile = (file?: File) => {
+  const loadMidiFromFile = (file?: File, scannedItem?: ScannedMidiFile) => {
     if (!file) return;
     setNotificationBanner(`⏳ Loading "${file.name}"...`);
     const reader = new FileReader();
@@ -1513,6 +1726,21 @@ export const PluginSimulator: React.FC = () => {
         synthAudioEngine.stop();
         setPlayheadPpq(0);
         setSelectedNoteIds(new Set());
+        setParams((prev) => ({ ...prev, loopStartPpq: 0, loopEndPpq: null }));
+        if (scannedItem) {
+          const fileKey = getLibraryFileKey(scannedItem);
+          const detected = analyzeKeyFromNotes(parsed.notes);
+          setLibraryMeta((prev) => ({
+            ...prev,
+            [fileKey]: {
+              ...prev[fileKey],
+              detectedKey: detected.keyName,
+              detectedRoot: detected.rootPitch,
+              detectedIsMinor: detected.isMinor,
+              bpm: parsed.bpm,
+            },
+          }));
+        }
         setSequence(parsed);
         if (parsed.notes.length === 0) {
           setNotificationBanner(`Warning: "${file.name}" was loaded but contains no MIDI note events.`);
@@ -1867,6 +2095,23 @@ export const PluginSimulator: React.FC = () => {
             >
               <ChevronRight className="w-3.5 h-3.5" />
             </button>
+
+            {activeSourceType === 'scanned' && currentScannedFileIdx >= 0 && scannedFiles[currentScannedFileIdx] && (() => {
+              const activeItem = scannedFiles[currentScannedFileIdx];
+              const activeKey = getLibraryFileKey(activeItem);
+              const isFav = !!libraryMeta[activeKey]?.favorite;
+              return (
+                <button
+                  onClick={() => handleToggleFavorite(activeKey)}
+                  className={`p-1 rounded transition mr-0.5 ${
+                    isFav ? 'text-amber-400 bg-amber-500/15' : 'text-neutral-500 hover:text-amber-300'
+                  }`}
+                  title={isFav ? 'Remove from Favourites' : 'Bookmark / Favourite active MIDI file'}
+                >
+                  <Star className={`w-3.5 h-3.5 ${isFav ? 'fill-current' : ''}`} />
+                </button>
+              );
+            })()}
 
             {/* Integrated Library Button */}
             <button
@@ -2333,9 +2578,9 @@ export const PluginSimulator: React.FC = () => {
             <button
               onClick={applyTimingQuantize}
               className="hardware-button px-2 py-0.5 text-[9.5px] font-mono font-bold text-amber-400 rounded transition ml-1 uppercase"
-              title="Quantize note start times and lengths to grid"
+              title={`Quantise note timing to grid (${params.quantizeStrength ?? 100}% strength — adjust in Transform panel)`}
             >
-              Q-Time
+              Q-Time{(params.quantizeStrength ?? 100) < 100 ? ` ${params.quantizeStrength}%` : ''}
             </button>
           </div>
 
@@ -2493,6 +2738,20 @@ export const PluginSimulator: React.FC = () => {
 
         {/* Right: PROMINENT MODULE TOGGLE SWITCHES - HIGH VISIBILITY */}
         <div className="flex items-center gap-2 shrink-0">
+          {/* Mechanical Rocker Switch: Transform / Groove / Voicings */}
+          <button
+            onClick={() => setShowTransformPanel(!showTransformPanel)}
+            className={`flex items-center gap-1.5 px-3 py-1 text-xs font-mono font-bold rounded transition border ${
+              showTransformPanel
+                ? 'bg-sky-900/60 text-sky-200 border-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.5)]'
+                : 'hardware-button text-sky-300'
+            }`}
+            title="Toggle Transform Rack (Quantise Strength, Swing, Legato, Strum, Stretch, Voicings, Reverse, Mirror, Layer Extract)"
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5 text-sky-300" />
+            <span className="uppercase text-[10.5px] tracking-wider">TRANSFORM</span>
+          </button>
+
           {/* Mechanical Rocker Switch: Rule-Based Generator */}
           <button
             onClick={() => setShowGeneratorPanel(!showGeneratorPanel)}
@@ -2538,6 +2797,267 @@ export const PluginSimulator: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* MIDI Transform Rack Panel (Groove, Quantise Strength, Swing, Legato/Staccato, Strum, Destructive Speed, Chords & Patterns) */}
+      {showTransformPanel && (
+        <div className="shrink-0 bg-[#12151a] py-2 px-4 border-b-2 border-black/90 shadow-inner space-y-1.5 text-xs font-mono">
+          {/* Row 1: Rhythm, Timing & Groove */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1.5 mr-1">
+                <span className="silkscreen-label text-sky-400 font-bold">TRANSFORM:</span>
+                <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-neutral-900 border border-neutral-700 text-neutral-300">
+                  {selectedNoteIds.size > 0 ? `${selectedNoteIds.size} Sel` : `All (${sequence.notes.length})`}
+                </span>
+              </div>
+
+              {/* Quantise Strength (%) */}
+              <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+                <span className="text-neutral-400 text-[10px]">Q-Str:</span>
+                <input
+                  type="range"
+                  min={10}
+                  max={100}
+                  step={5}
+                  value={params.quantizeStrength ?? 100}
+                  onChange={(e) =>
+                    setParams((p) => ({ ...p, quantizeStrength: Number(e.target.value) }))
+                  }
+                  className="w-16 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-amber-500"
+                  title="Quantise pull strength (50% = loose tighten, 100% = hard snap)"
+                />
+                <span className="text-amber-400 font-bold text-[10px] w-8 text-right">
+                  {params.quantizeStrength ?? 100}%
+                </span>
+                <button
+                  type="button"
+                  onClick={applyTimingQuantize}
+                  className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px] uppercase"
+                  title={`Quantise to ${params.quantizeGrid} grid at ${params.quantizeStrength ?? 100}% strength`}
+                >
+                  Quantise
+                </button>
+              </div>
+
+              {/* Swing / Shuffle (%) */}
+              <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+                <span className="text-neutral-400 text-[10px]">Swing:</span>
+                <div className="flex gap-0.5">
+                  {(['1/8', '1/16'] as const).map((g) => (
+                    <button
+                      key={g}
+                      type="button"
+                      onClick={() => setSwingGrid(g)}
+                      className={`px-1 py-0.5 rounded text-[9px] font-bold ${
+                        swingGrid === g ? 'bg-sky-500 text-black' : 'text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      {g}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={swingPercent}
+                  onChange={(e) => setSwingPercent(Number(e.target.value))}
+                  className="w-16 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-sky-400"
+                />
+                <span className="text-sky-300 font-bold text-[10px] w-7 text-right">{swingPercent}%</span>
+                <button
+                  type="button"
+                  onClick={applySwing}
+                  className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px] uppercase"
+                  title="Push off-beat 8ths or 16ths for swing/shuffle groove"
+                >
+                  Apply
+                </button>
+              </div>
+
+              {/* Legato / Overlap Fix & Staccato */}
+              <div className="flex items-center gap-1 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+                <button
+                  type="button"
+                  onClick={applyLegato}
+                  className="hardware-button px-2 py-0.5 text-emerald-300 font-bold rounded text-[9.5px] uppercase"
+                  title="Extend or trim notes cleanly to touch next onset (removes gaps and overlaps)"
+                >
+                  Legato / Fix
+                </button>
+                <button
+                  type="button"
+                  onClick={applyStaccato}
+                  className="hardware-button px-2 py-0.5 text-neutral-300 font-bold rounded text-[9.5px] uppercase"
+                  title="Shorten note durations by 50%"
+                >
+                  Staccato 50%
+                </button>
+              </div>
+
+              {/* Strum / Flam */}
+              <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+                <span className="text-neutral-400 text-[10px]">Strum:</span>
+                <input
+                  type="range"
+                  min={5}
+                  max={80}
+                  step={5}
+                  value={strumMs}
+                  onChange={(e) => setStrumMs(Number(e.target.value))}
+                  className="w-14 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-emerald-400"
+                />
+                <span className="text-emerald-300 font-bold text-[10px] w-8">{strumMs}ms</span>
+                <button
+                  type="button"
+                  onClick={() => applyStrum('up')}
+                  className="hardware-button px-1.5 py-0.5 text-emerald-300 font-bold rounded text-[9.5px]"
+                  title="Strum chords low-to-high (Up-Strum)"
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyStrum('down')}
+                  className="hardware-button px-1.5 py-0.5 text-emerald-300 font-bold rounded text-[9.5px]"
+                  title="Strum chords high-to-low (Down-Strum)"
+                >
+                  ↓
+                </button>
+              </div>
+
+              {/* Destructive Half/Double Speed Resize */}
+              <div className="flex items-center gap-1 bg-[#0c0e10] px-2 py-1 rounded border border-amber-700/50 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+                <span className="text-amber-400/90 text-[9.5px] font-bold">GRID RESIZE:</span>
+                <button
+                  type="button"
+                  onClick={() => applyDestructiveSpeed(0.5)}
+                  className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px]"
+                  title="Destructively compress notes 0.5× (Double-Time) so dragging to Logic Pro drops double-time notes onto the grid"
+                >
+                  0.5× (2× Spd)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyDestructiveSpeed(2.0)}
+                  className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px]"
+                  title="Destructively stretch notes 2× (Half-Time) so dragging to Logic Pro drops half-time notes onto the grid"
+                >
+                  2× (0.5× Spd)
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowTransformPanel(false)}
+              className="text-neutral-400 hover:text-white p-1 rounded transition"
+              title="Close Transform panel"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Row 2: Pitch, Chords, Patterns & Layer Extraction */}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Chord Voicing Tools */}
+            <div className="flex items-center gap-1 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+              <span className="text-neutral-400 text-[10px] mr-0.5">CHORDS:</span>
+              <button
+                type="button"
+                onClick={() => applyChordInvert('up')}
+                className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px]"
+                title="Invert chord(s) up (lowest voice +1 octave)"
+              >
+                Inv ↑
+              </button>
+              <button
+                type="button"
+                onClick={() => applyChordInvert('down')}
+                className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px]"
+                title="Invert chord(s) down (highest voice -1 octave)"
+              >
+                Inv ↓
+              </button>
+              <button
+                type="button"
+                onClick={applyDrop2}
+                className="hardware-button px-2 py-0.5 text-purple-300 font-bold rounded text-[9.5px]"
+                title="Drop-2 voicing (drops 2nd highest chord tone by 1 octave)"
+              >
+                Drop-2
+              </button>
+              <button
+                type="button"
+                onClick={applyOpenVoice}
+                className="hardware-button px-2 py-0.5 text-purple-300 font-bold rounded text-[9.5px]"
+                title="Toggle between Open (wide spread) and Close voicing"
+              >
+                Open / Close
+              </button>
+            </div>
+
+            {/* Pattern Flip & Shift */}
+            <div className="flex items-center gap-1 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+              <span className="text-neutral-400 text-[10px] mr-0.5">PATTERN:</span>
+              <button
+                type="button"
+                onClick={applyReversePattern}
+                className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px]"
+                title="Reverse pattern horizontally (Retrograde)"
+              >
+                Reverse ↔
+              </button>
+              <button
+                type="button"
+                onClick={applyMirrorPattern}
+                className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px]"
+                title="Mirror pitches vertically around center pitch (respects Scale Lock)"
+              >
+                Mirror ↕
+              </button>
+              <button
+                type="button"
+                onClick={() => applyRotatePattern(-0.25)}
+                className="hardware-button px-2 py-0.5 text-neutral-200 font-bold rounded text-[9.5px]"
+                title="Rotate pattern left by 1/16 note"
+              >
+                ◀ Shift 1/16
+              </button>
+              <button
+                type="button"
+                onClick={() => applyRotatePattern(0.25)}
+                className="hardware-button px-2 py-0.5 text-neutral-200 font-bold rounded text-[9.5px]"
+                title="Rotate pattern right by 1/16 note"
+              >
+                Shift 1/16 ▶
+              </button>
+            </div>
+
+            {/* Layer Extraction */}
+            <div className="flex items-center gap-1 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+              <span className="text-neutral-400 text-[10px] mr-0.5">EXTRACT:</span>
+              <button
+                type="button"
+                onClick={() => applyExtractLayer('bass')}
+                className="hardware-button px-2 py-0.5 text-emerald-300 font-bold rounded text-[9.5px]"
+                title="Keep only the lowest note at each chord/step to isolate a Bass-Root layer"
+              >
+                Bass-Root Only
+              </button>
+              <button
+                type="button"
+                onClick={() => applyExtractLayer('topline')}
+                className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px]"
+                title="Keep only the highest note at each chord/step to isolate a Topline melody"
+              >
+                Topline Only
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Rule-Based MIDI Generator Rack Panel (Selectable: Melody, Riff, Bass Line, Chords) */}
       {showGeneratorPanel && (
@@ -2749,6 +3269,8 @@ export const PluginSimulator: React.FC = () => {
           scaleLock={params.scaleLock}
           timeSigNumerator={sequence.timeSigNumerator || 4}
           timeSigDenominator={sequence.timeSigDenominator || 4}
+          loopStartPpq={params.loopStartPpq ?? 0}
+          loopEndPpq={params.loopEndPpq ?? null}
           onSnapshotBeforeChange={(description) => pushHistorySnapshot(description)}
           onNotesChange={(newNotes) => {
             setSequence((s) => ({ ...s, notes: newNotes }));
@@ -2757,6 +3279,21 @@ export const PluginSimulator: React.FC = () => {
           onLengthChange={(newLength) => {
             pushHistorySnapshot('Change Length');
             setSequence((s) => ({ ...s, totalLengthPpq: newLength }));
+            setParams((p) => {
+              const curStart = p.loopStartPpq ?? 0;
+              const curEnd = p.loopEndPpq ?? null;
+              if (curStart >= newLength - 0.5 || (curEnd !== null && curEnd > newLength)) {
+                return {
+                  ...p,
+                  loopStartPpq: curStart >= newLength - 0.5 ? 0 : curStart,
+                  loopEndPpq: curEnd !== null && curEnd > newLength ? null : curEnd,
+                };
+              }
+              return p;
+            });
+          }}
+          onLoopRangeChange={(start, end) => {
+            setParams((p) => ({ ...p, loopStartPpq: start, loopEndPpq: end }));
           }}
           selectedNoteIds={selectedNoteIds}
           onSelectedNotesChange={(ids) => setSelectedNoteIds(ids)}
@@ -3096,6 +3633,12 @@ export const PluginSimulator: React.FC = () => {
         onClose={() => setShowFolderModal(false)}
         scannedFiles={scannedFiles}
         savedFolderPaths={savedFolderPaths}
+        libraryMeta={libraryMeta}
+        projectKeyRoot={params.projectKeyRoot}
+        projectBpm={sequence.bpm}
+        onToggleFavorite={handleToggleFavorite}
+        onAddTag={handleAddTag}
+        onRemoveTag={handleRemoveTag}
         onSelectFile={(scannedItem, originalIndex) => {
           setCurrentScannedFileIdx(originalIndex);
           setActiveSourceType('scanned');

@@ -83,6 +83,7 @@ public:
     void humanizeTiming(double maxDeltaPpq);
     void harmonizeNotes(int semitoneInterval);
     void setSequenceLength(double newTotalPpq);
+    void setLoopRangePpq(double startPpq, double endPpq);
 
     // GUI / Audio thread commands
     void sendAudioCommand(const AudioCommand& cmd);
@@ -194,6 +195,8 @@ private:
 
     // Playback state atomics
     std::atomic<double> currentPlayheadPpq { 0.0 };
+    std::atomic<double> loopStartPpq { 0.0 };
+    std::atomic<double> loopEndPpq { -1.0 };
     std::atomic<bool> isPlaying { false };
     std::atomic<double> hostBpm { 120.0 };
     std::atomic<bool> hostBpmDetected { false };

@@ -18,6 +18,8 @@ class AudioSynthesizerEngine {
     velocityOffset: 0,
     syncMode: 'audition',
     loop: true,
+    loopStartPpq: 0,
+    loopEndPpq: null,
     targetKeyRoot: 0,
     targetKeyIsMinor: false,
     targetScaleType: 'minor',
@@ -155,6 +157,17 @@ class AudioSynthesizerEngine {
     this.onStateChangeCallback = cb;
   }
 
+  private getActiveLoopBounds(): { loopStart: number; loopEnd: number } {
+    const seqLen = Math.max(0.5, this.sequenceLengthPpq);
+    const loopStart = Math.max(0, Math.min(seqLen - 0.25, this.params.loopStartPpq ?? 0));
+    const rawEnd = this.params.loopEndPpq;
+    const loopEnd =
+      rawEnd !== null && rawEnd !== undefined && rawEnd > loopStart + 0.24
+        ? Math.min(seqLen, rawEnd)
+        : seqLen;
+    return { loopStart, loopEnd };
+  }
+
   public play() {
     if (isJuceNative()) {
       this.isPlaying = true;
@@ -164,6 +177,12 @@ class AudioSynthesizerEngine {
     }
     this.initContext();
     if (this.isPlaying) return;
+
+    const { loopStart, loopEnd } = this.getActiveLoopBounds();
+    if (this.currentPpq < loopStart || this.currentPpq >= loopEnd) {
+      this.currentPpq = loopStart;
+      if (this.onPlayheadCallback) this.onPlayheadCallback(this.currentPpq);
+    }
 
     this.isPlaying = true;
     this.lastTimestamp = performance.now();
@@ -189,17 +208,18 @@ class AudioSynthesizerEngine {
   }
 
   public stop() {
+    const { loopStart } = this.getActiveLoopBounds();
     if (isJuceNative()) {
       this.isPlaying = false;
-      this.currentPpq = 0;
+      this.currentPpq = loopStart;
       if (this.onStateChangeCallback) this.onStateChangeCallback(false);
-      if (this.onPlayheadCallback) this.onPlayheadCallback(0);
+      if (this.onPlayheadCallback) this.onPlayheadCallback(loopStart);
       emitToJuce('transportCommand', { action: 'stop' });
       return;
     }
     this.pause();
-    this.currentPpq = 0;
-    if (this.onPlayheadCallback) this.onPlayheadCallback(0);
+    this.currentPpq = loopStart;
+    if (this.onPlayheadCallback) this.onPlayheadCallback(loopStart);
     this.notifyActivePitches();
   }
 
@@ -254,19 +274,21 @@ class AudioSynthesizerEngine {
     const ppqPerMs = effectiveBpm / (60 * 1000);
     const deltaPpq = deltaMs * ppqPerMs;
 
-    const prevPpq = this.currentPpq;
+    const { loopStart, loopEnd } = this.getActiveLoopBounds();
+    const prevPpq = this.currentPpq < loopStart ? loopStart : this.currentPpq;
     let nextPpq = prevPpq + deltaPpq;
 
     // Check for note triggers in the current time step
-    if (nextPpq >= this.sequenceLengthPpq) {
+    if (nextPpq >= loopEnd) {
       if (this.params.loop) {
-        // Trigger notes in tail of loop
-        this.triggerNotesInRange(prevPpq, this.sequenceLengthPpq);
-        nextPpq = nextPpq % this.sequenceLengthPpq;
-        // Trigger notes at start of loop
-        this.triggerNotesInRange(0, nextPpq);
+        // Trigger notes in tail of A/B loop
+        this.triggerNotesInRange(prevPpq, loopEnd);
+        const loopSpan = Math.max(0.25, loopEnd - loopStart);
+        nextPpq = loopStart + ((nextPpq - loopStart) % loopSpan);
+        // Trigger notes at start of A/B loop
+        this.triggerNotesInRange(loopStart, nextPpq);
       } else {
-        this.triggerNotesInRange(prevPpq, this.sequenceLengthPpq);
+        this.triggerNotesInRange(prevPpq, loopEnd);
         this.stop();
         return;
       }

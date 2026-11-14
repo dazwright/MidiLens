@@ -117,11 +117,14 @@ void MidiPreviewerAudioProcessor::handleIncomingCommands(juce::MidiBuffer& midiM
                 break;
 
             case AudioCommandType::StopPlayback:
+            {
                 isPlaying.store(false, std::memory_order_relaxed);
-                currentPlayheadPpq.store(0.0, std::memory_order_relaxed);
-                lastPpqPosition = 0.0;
+                const double resetPos = std::max(0.0, loopStartPpq.load(std::memory_order_relaxed));
+                currentPlayheadPpq.store(resetPos, std::memory_order_relaxed);
+                lastPpqPosition = resetPos;
                 pendingAllNotesOff.store(true, std::memory_order_relaxed);
                 break;
+            }
 
             case AudioCommandType::SeekPositionPpq:
                 currentPlayheadPpq.store(cmd.doubleParam, std::memory_order_relaxed);
@@ -391,14 +394,21 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     const int velocityOffset = static_cast<int>(velocityOffsetParam->load(std::memory_order_relaxed));
 
     const double seqLengthPpq = std::max(0.25, activeSequence->totalLengthPpq);
+    const double rawLoopStart = loopStartPpq.load(std::memory_order_relaxed);
+    const double rawLoopEnd = loopEndPpq.load(std::memory_order_relaxed);
+    const double activeLoopStart = std::max(0.0, std::min(seqLengthPpq - 0.25, rawLoopStart));
+    const double activeLoopEnd = (rawLoopEnd > activeLoopStart + 0.24)
+        ? std::min(seqLengthPpq, rawLoopEnd)
+        : seqLengthPpq;
+    const double activeSpan = std::max(0.25, activeLoopEnd - activeLoopStart);
 
-    double startPpq = 0.0;
-    double endPpq = 0.0;
+    double startPpq = activeLoopStart;
+    double endPpq = activeLoopStart;
     double effectiveBpm = currentBpm;
 
     if (followDaw && isHostPlayingNow)
     {
-        if (!loopEnabled && (hostPpq * speedMultiplier) >= seqLengthPpq)
+        if (!loopEnabled && (activeLoopStart + hostPpq * speedMultiplier) >= activeLoopEnd)
         {
             if (activeNoteCount > 0)
                 flushAllNotesOff(midiMessages);
@@ -410,10 +420,11 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         const double ppqPerSample = (effectiveBpm / (60.0 * sampleRate)) * speedMultiplier;
         const double blockPpqSpan = ppqPerSample * numSamples;
 
-        startPpq = std::fmod(hostPpq * speedMultiplier, seqLengthPpq);
-        if (startPpq < 0.0)
-            startPpq += seqLengthPpq;
+        double rel = std::fmod(hostPpq * speedMultiplier, activeSpan);
+        if (rel < 0.0)
+            rel += activeSpan;
 
+        startPpq = activeLoopStart + rel;
         endPpq = startPpq + blockPpqSpan;
         currentPlayheadPpq.store(startPpq, std::memory_order_relaxed);
     }
@@ -436,18 +447,19 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         const double blockPpqSpan = ppqPerSample * numSamples;
 
         startPpq = currentPlayheadPpq.load(std::memory_order_relaxed);
-        if (startPpq >= seqLengthPpq || startPpq < 0.0)
-            startPpq = 0.0;
+        if (startPpq >= activeLoopEnd || startPpq < activeLoopStart)
+            startPpq = activeLoopStart;
         endPpq = startPpq + blockPpqSpan;
 
-        if (loopEnabled && endPpq >= seqLengthPpq)
+        if (loopEnabled && endPpq >= activeLoopEnd)
         {
-            currentPlayheadPpq.store(std::fmod(endPpq, seqLengthPpq), std::memory_order_relaxed);
+            const double wrappedPos = activeLoopStart + std::fmod(endPpq - activeLoopStart, activeSpan);
+            currentPlayheadPpq.store(wrappedPos, std::memory_order_relaxed);
         }
-        else if (endPpq >= seqLengthPpq)
+        else if (endPpq >= activeLoopEnd)
         {
             isPlaying.store(false, std::memory_order_relaxed);
-            currentPlayheadPpq.store(0.0, std::memory_order_relaxed);
+            currentPlayheadPpq.store(activeLoopStart, std::memory_order_relaxed);
             flushAllNotesOff(midiMessages);
             updateActivePitchBitmask();
             return;
@@ -473,7 +485,7 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         bool shouldTriggerNoteOn = false;
         double deltaPpqOn = 0.0;
 
-        if (endPpq <= seqLengthPpq)
+        if (endPpq <= activeLoopEnd)
         {
             if (evPos >= startPpq && evPos < endPpq)
             {
@@ -483,11 +495,11 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         }
         else
         {
-            double wrappedEnd = endPpq - seqLengthPpq;
-            if ((evPos >= startPpq && evPos < seqLengthPpq) || (evPos >= 0.0 && evPos < wrappedEnd))
+            double wrappedEnd = activeLoopStart + (endPpq - activeLoopEnd);
+            if ((evPos >= startPpq && evPos < activeLoopEnd) || (evPos >= activeLoopStart && evPos < wrappedEnd))
             {
                 shouldTriggerNoteOn = true;
-                deltaPpqOn = (evPos >= startPpq) ? (evPos - startPpq) : (seqLengthPpq - startPpq + evPos);
+                deltaPpqOn = (evPos >= startPpq) ? (evPos - startPpq) : (activeLoopEnd - startPpq + (evPos - activeLoopStart));
             }
         }
 
@@ -516,7 +528,7 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         bool shouldTriggerNoteOff = false;
         double deltaPpqOff = 0.0;
 
-        if (endPpq <= seqLengthPpq)
+        if (endPpq <= activeLoopEnd)
         {
             if (evEnd >= startPpq && evEnd < endPpq)
             {
@@ -526,11 +538,11 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         }
         else
         {
-            double wrappedEnd = endPpq - seqLengthPpq;
-            if ((evEnd >= startPpq && evEnd < seqLengthPpq) || (evEnd >= 0.0 && evEnd < wrappedEnd))
+            double wrappedEnd = activeLoopStart + (endPpq - activeLoopEnd);
+            if ((evEnd >= startPpq && evEnd < activeLoopEnd) || (evEnd >= activeLoopStart && evEnd < wrappedEnd))
             {
                 shouldTriggerNoteOff = true;
-                deltaPpqOff = (evEnd >= startPpq) ? (evEnd - startPpq) : (seqLengthPpq - startPpq + evEnd);
+                deltaPpqOff = (evEnd >= startPpq) ? (evEnd - startPpq) : (activeLoopEnd - startPpq + (evEnd - activeLoopStart));
             }
         }
 
@@ -664,6 +676,12 @@ void MidiPreviewerAudioProcessor::setSequenceLength(double newTotalPpq)
     auto updated = std::make_shared<SequenceSnapshot>(*snap);
     updated->totalLengthPpq = std::max(1.0, newTotalPpq);
     setSequenceSnapshot(updated, false);
+}
+
+void MidiPreviewerAudioProcessor::setLoopRangePpq(double startPpq, double endPpq)
+{
+    loopStartPpq.store(std::max(0.0, startPpq), std::memory_order_relaxed);
+    loopEndPpq.store(endPpq, std::memory_order_relaxed);
 }
 
 void MidiPreviewerAudioProcessor::loadMidiSequenceFromFile(const juce::File& midiFile)

@@ -54,6 +54,8 @@ export interface PluginParameters {
   velocityOffset: number; // -64 to +64
   syncMode: 'daw' | 'audition';
   loop: boolean;
+  loopStartPpq?: number; // A loop locator in PPQ (default 0)
+  loopEndPpq?: number | null; // B loop locator in PPQ (null = full sequence length)
   targetKeyRoot: number;
   targetKeyIsMinor: boolean;
   targetScaleType: ScaleType;
@@ -63,12 +65,29 @@ export interface PluginParameters {
   scaleType: ScaleType;
   scaleLock: boolean; // Gray out non-scale notes & prevent dragging onto them
   quantizeGrid: QuantizeGrid;
+  quantizeStrength?: number; // 10 - 100%
   // Arpeggiator Parameters
   arpEnabled: boolean;
   arpMode: ArpMode;
   arpRate: ArpRate;
   arpOctaves: ArpOctaves;
   arpGate: number; // 0.1 - 1.0 (default 0.75)
+}
+
+export interface DetectedChord {
+  startPpq: number;
+  endPpq: number;
+  label: string;
+  rootPitchClass: number;
+}
+
+export interface LibraryFileMeta {
+  favorite?: boolean;
+  tags?: string[];
+  detectedKey?: string;
+  detectedRoot?: number;
+  detectedIsMinor?: boolean;
+  bpm?: number;
 }
 
 export interface ScannedMidiFile {

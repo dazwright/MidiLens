@@ -1,7 +1,8 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { MidiNote, ScaleType } from '../types';
 import { isPitchInScale, snapPitchToScale, getVelocityColor } from '../scaleUtils';
 import { getNoteName } from '../keyDetection';
+import { detectChordsInSequence } from '../midiTransform';
 import {
   ZoomIn,
   ZoomOut,
@@ -40,10 +41,13 @@ interface PianoRollProps {
   scaleLock: boolean;
   timeSigNumerator?: number;
   timeSigDenominator?: number;
+  loopStartPpq?: number;
+  loopEndPpq?: number | null;
   selectedNoteIds?: Set<number>;
   onNotesChange: (notes: MidiNote[]) => void;
   onSeek: (ppq: number) => void;
   onLengthChange: (newLengthPpq: number) => void;
+  onLoopRangeChange?: (startPpq: number, endPpq: number | null) => void;
   onSelectedNotesChange?: (selectedIds: Set<number>) => void;
   onSnapshotBeforeChange?: (description: string) => void;
 }
@@ -58,13 +62,17 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
   scaleLock,
   timeSigNumerator = 4,
   timeSigDenominator = 4,
+  loopStartPpq = 0,
+  loopEndPpq = null,
   selectedNoteIds: propSelectedNoteIds,
   onNotesChange,
   onSeek,
   onLengthChange,
+  onLoopRangeChange,
   onSelectedNotesChange,
   onSnapshotBeforeChange,
 }) => {
+  const [showChordNames, setShowChordNames] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -120,12 +128,31 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
   const minPitch = Math.max(0, rawMinPitch - 3);
   const maxPitch = Math.min(127, rawMaxPitch + 3);
 
-  const rulerHeight = 34;
+  const rulerHeight = 40;
   const pianoKeysWidth = 56;
+
+  const effectiveLoopStart = Math.max(0, Math.min(totalLengthPpq - 0.5, loopStartPpq || 0));
+  const effectiveLoopEnd =
+    loopEndPpq !== null && loopEndPpq !== undefined && loopEndPpq > effectiveLoopStart + 0.49
+      ? Math.min(totalLengthPpq, loopEndPpq)
+      : totalLengthPpq;
+  const isCustomLoopActive = effectiveLoopStart > 0.01 || effectiveLoopEnd < totalLengthPpq - 0.01;
+
+  const detectedChords = useMemo(() => {
+    if (!showChordNames) return [];
+    return detectChordsInSequence(
+      notes,
+      totalLengthPpq,
+      timeSigNumerator,
+      timeSigDenominator,
+      previewTranspose,
+      scaleRoot
+    );
+  }, [showChordNames, notes, totalLengthPpq, timeSigNumerator, timeSigDenominator, previewTranspose, scaleRoot]);
 
   // Interaction tracking state
   const dragRef = useRef<{
-    mode: 'none' | 'scrub' | 'move' | 'resize' | 'marquee' | 'dragLength';
+    mode: 'none' | 'scrub' | 'move' | 'resize' | 'marquee' | 'dragLength' | 'dragLoopA' | 'dragLoopB';
     startX: number;
     startY: number;
     activeNoteId: number;
@@ -467,7 +494,32 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       ctx.fillRect(lengthX, rulerHeight, width - lengthX, height - rulerHeight);
     }
 
-    // Top Ruler (CRT Scope Header Strip)
+    // Custom A/B Loop Region Shading & Vertical Guide Lines
+    const loopAX = ppqToX(effectiveLoopStart);
+    const loopBX = ppqToX(effectiveLoopEnd);
+    if (isCustomLoopActive) {
+      ctx.fillStyle = 'rgba(4, 8, 12, 0.55)';
+      if (loopAX > pianoKeysWidth) {
+        ctx.fillRect(pianoKeysWidth, rulerHeight, loopAX - pianoKeysWidth, height - rulerHeight);
+      }
+      if (loopBX < lengthX) {
+        ctx.fillRect(loopBX, rulerHeight, lengthX - loopBX, height - rulerHeight);
+      }
+
+      ctx.save();
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 1.4;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(loopAX, rulerHeight);
+      ctx.lineTo(loopAX, height);
+      ctx.moveTo(loopBX, rulerHeight);
+      ctx.lineTo(loopBX, height);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Top Ruler (CRT Scope Header Strip + Chord Recognition Strip + A/B Loop Bar)
     ctx.fillStyle = '#080d0a';
     ctx.fillRect(0, 0, width, rulerHeight);
     ctx.strokeStyle = 'rgba(16, 185, 129, 0.25)';
@@ -477,8 +529,14 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     ctx.lineTo(width, rulerHeight);
     ctx.stroke();
 
+    // Top A/B Loop Span Track (y = 0..8)
+    ctx.fillStyle = isCustomLoopActive ? 'rgba(56, 189, 248, 0.28)' : 'rgba(16, 185, 129, 0.12)';
+    ctx.fillRect(loopAX, 0, Math.max(4, loopBX - loopAX), 6);
+    ctx.fillStyle = isCustomLoopActive ? '#38bdf8' : 'rgba(52, 211, 153, 0.45)';
+    ctx.fillRect(loopAX, 0, Math.max(4, loopBX - loopAX), 2);
+
     ctx.fillStyle = '#34d399';
-    ctx.font = 'bold 10px "JetBrains Mono", monospace';
+    ctx.font = 'bold 10px "SF Mono", "JetBrains Mono", Menlo, Monaco, ui-monospace, monospace';
     ctx.textAlign = 'left';
 
     for (let bar = 0; bar <= numBars; bar++) {
@@ -489,11 +547,12 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       ctx.strokeStyle = 'rgba(16, 185, 129, 0.4)';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(x, rulerHeight - 12);
+      ctx.moveTo(x, rulerHeight - 14);
       ctx.lineTo(x, rulerHeight);
       ctx.stroke();
 
-      ctx.fillText(`${bar + 1}`, x + 5, 21);
+      ctx.fillStyle = '#34d399';
+      ctx.fillText(`${bar + 1}`, x + 5, 17);
 
       for (let beat = 1; beat < timeSigNumerator; beat++) {
         const bx = ppqToX(barStartPpq + beat * beatPpq);
@@ -507,15 +566,88 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       }
     }
 
+    // Detected Chords Row inside Bottom Half of Ruler (y = 22..38)
+    if (showChordNames && detectedChords.length > 0) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(pianoKeysWidth, 20, Math.max(0, width - pianoKeysWidth), 20);
+      ctx.clip();
+      ctx.font = 'bold 9px "SF Mono", "JetBrains Mono", Menlo, Monaco, ui-monospace, monospace';
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+
+      for (const ch of detectedChords) {
+        const cx = ppqToX(ch.startPpq);
+        const cw = Math.max(18, ppqToX(ch.endPpq) - cx - 2);
+        if (cx > width || cx + cw < pianoKeysWidth) continue;
+
+        ctx.fillStyle = 'rgba(245, 158, 11, 0.14)';
+        ctx.beginPath();
+        ctx.roundRect(cx + 2, 23, Math.min(cw - 2, Math.max(24, ch.label.length * 6.5 + 8)), 14, 3);
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(245, 158, 11, 0.35)';
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+
+        ctx.fillStyle = '#fbbf24';
+        ctx.fillText(ch.label, cx + 6, 30);
+      }
+      ctx.restore();
+    }
+
+    // Left Corner Header Badge in Ruler
+    ctx.fillStyle = '#0c120e';
+    ctx.fillRect(0, 0, pianoKeysWidth, rulerHeight);
+    ctx.fillStyle = '#64748b';
+    ctx.font = 'bold 8px "SF Mono", "JetBrains Mono", Menlo, Monaco, ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('KEYS', pianoKeysWidth / 2, 12);
+    if (showChordNames) {
+      ctx.fillStyle = '#d97706';
+      ctx.fillText('CHORDS', pianoKeysWidth / 2, 29);
+    }
+
+    // Draggable A & B Loop Locator Flags on Ruler
+    // A Flag (Start Loop)
+    ctx.fillStyle = isCustomLoopActive ? '#38bdf8' : '#0284c7';
+    ctx.beginPath();
+    ctx.moveTo(loopAX, 0);
+    ctx.lineTo(loopAX + 13, 0);
+    ctx.lineTo(loopAX + 13, 12);
+    ctx.lineTo(loopAX + 6, 15);
+    ctx.lineTo(loopAX, 12);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#04121d';
+    ctx.font = 'bold 8.5px "SF Mono", "JetBrains Mono", Menlo, Monaco, ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('A', loopAX + 6.5, 6.5);
+
+    // B Flag (End Loop)
+    ctx.fillStyle = isCustomLoopActive ? '#38bdf8' : '#0284c7';
+    ctx.beginPath();
+    ctx.moveTo(loopBX - 13, 0);
+    ctx.lineTo(loopBX, 0);
+    ctx.lineTo(loopBX, 12);
+    ctx.lineTo(loopBX - 6, 15);
+    ctx.lineTo(loopBX - 13, 12);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#04121d';
+    ctx.fillText('B', loopBX - 6.5, 6.5);
+
     // Draggable Length Handle on Ruler (Vintage Amber Tag)
     ctx.fillStyle = '#d97706';
     ctx.beginPath();
-    ctx.roundRect(lengthX - 11, 4, 22, 24, 3);
+    ctx.roundRect(lengthX - 11, 16, 22, 20, 3);
     ctx.fill();
     ctx.fillStyle = '#000000';
-    ctx.font = 'bold 9px "JetBrains Mono", monospace';
+    ctx.font = 'bold 8.5px "SF Mono", "JetBrains Mono", Menlo, Monaco, ui-monospace, monospace';
     ctx.textAlign = 'center';
-    ctx.fillText('END', lengthX, 19);
+    ctx.fillText('END', lengthX, 26);
 
     // Draw Notes with Velocity Heatmap Colors (Green -> Yellow/Amber -> Vivid Red) & Crisp Selection/Lock Framing
     const monoFontFamily = '"SF Mono", "JetBrains Mono", Menlo, Monaco, ui-monospace, monospace';
@@ -727,6 +859,13 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     scaleRoot,
     scaleType,
     scaleLock,
+    effectiveLoopStart,
+    effectiveLoopEnd,
+    isCustomLoopActive,
+    showChordNames,
+    detectedChords,
+    timeSigNumerator,
+    timeSigDenominator,
     pitchToY,
     ppqToX,
   ]);
@@ -745,7 +884,41 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     const y = e.clientY - rect.top;
 
     const lengthHandleX = ppqToX(totalLengthPpq);
-    if (y <= rulerHeight && Math.abs(x - lengthHandleX) <= 14) {
+    const loopAX = ppqToX(effectiveLoopStart);
+    const loopBX = ppqToX(effectiveLoopEnd);
+
+    // Check A / B Loop Locator Flags on top of Ruler
+    if (y <= 17 && x >= loopAX - 4 && x <= loopAX + 16 && onLoopRangeChange) {
+      dragRef.current = {
+        mode: 'dragLoopA',
+        startX: x,
+        startY: y,
+        activeNoteId: -1,
+        initialPpq: effectiveLoopStart,
+        initialPitch: 0,
+        initialDuration: 1,
+        initialLengthPpq: totalLengthPpq,
+        initialSelectedNotes: new Map(),
+      };
+      return;
+    }
+
+    if (y <= 17 && x >= loopBX - 16 && x <= loopBX + 4 && onLoopRangeChange) {
+      dragRef.current = {
+        mode: 'dragLoopB',
+        startX: x,
+        startY: y,
+        activeNoteId: -1,
+        initialPpq: effectiveLoopEnd,
+        initialPitch: 0,
+        initialDuration: 1,
+        initialLengthPpq: totalLengthPpq,
+        initialSelectedNotes: new Map(),
+      };
+      return;
+    }
+
+    if (y <= rulerHeight && y >= 15 && Math.abs(x - lengthHandleX) <= 14) {
       dragRef.current = {
         mode: 'dragLength',
         startX: x,
@@ -903,7 +1076,12 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     if (dragRef.current.mode === 'none') {
       if (canvas) {
         const lengthHandleX = ppqToX(totalLengthPpq);
-        if (y <= rulerHeight && Math.abs(x - lengthHandleX) <= 14) {
+        const loopAX = ppqToX(effectiveLoopStart);
+        const loopBX = ppqToX(effectiveLoopEnd);
+        if (
+          (y <= 17 && ((x >= loopAX - 4 && x <= loopAX + 16) || (x >= loopBX - 16 && x <= loopBX + 4))) ||
+          (y <= rulerHeight && y >= 15 && Math.abs(x - lengthHandleX) <= 14)
+        ) {
           canvas.style.cursor = 'ew-resize';
         } else if (y <= rulerHeight) {
           canvas.style.cursor = 'pointer';
@@ -942,7 +1120,17 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       return;
     }
 
-    if (dragRef.current.mode === 'dragLength') {
+    if (dragRef.current.mode === 'dragLoopA' && onLoopRangeChange) {
+      const snapStep = e.shiftKey ? 0.25 : 0.5;
+      const rawPpq = xToPpq(x);
+      const snappedA = Math.max(0, Math.min(effectiveLoopEnd - 0.5, Math.round(rawPpq / snapStep) * snapStep));
+      onLoopRangeChange(snappedA, effectiveLoopEnd >= totalLengthPpq - 0.01 ? null : effectiveLoopEnd);
+    } else if (dragRef.current.mode === 'dragLoopB' && onLoopRangeChange) {
+      const snapStep = e.shiftKey ? 0.25 : 0.5;
+      const rawPpq = xToPpq(x);
+      const snappedB = Math.min(totalLengthPpq, Math.max(effectiveLoopStart + 0.5, Math.round(rawPpq / snapStep) * snapStep));
+      onLoopRangeChange(effectiveLoopStart, snappedB >= totalLengthPpq - 0.01 ? null : snappedB);
+    } else if (dragRef.current.mode === 'dragLength') {
       const rawPpq = xToPpq(x);
       const snappedLength = Math.max(4, Math.round(rawPpq * 2) / 2);
       onLengthChange(snappedLength);
@@ -1406,6 +1594,42 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         >
           <ZoomIn className="w-3.5 h-3.5" />
         </button>
+
+        <div className="w-px h-3.5 bg-neutral-700 mx-1" />
+
+        {/* Chord Recognition Ruler Toggle */}
+        <button
+          onClick={() => setShowChordNames((v) => !v)}
+          className={`px-2 py-0.5 text-[10px] font-mono font-bold rounded border transition ${
+            showChordNames
+              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+              : 'bg-neutral-800 text-neutral-400 border-neutral-700 hover:text-white'
+          }`}
+          title="Toggle live chord detection labels on the ruler"
+        >
+          Chords
+        </button>
+
+        {/* A/B Audition Loop Region Readout & Reset */}
+        {onLoopRangeChange && (
+          <button
+            onClick={() => onLoopRangeChange(0, null)}
+            className={`px-2 py-0.5 text-[10px] font-mono font-bold rounded border transition ${
+              isCustomLoopActive
+                ? 'bg-sky-500/20 text-sky-300 border-sky-400/50 hover:bg-sky-500/30'
+                : 'bg-neutral-800/80 text-neutral-400 border-neutral-700 hover:text-neutral-200'
+            }`}
+            title={
+              isCustomLoopActive
+                ? `Looping A (${effectiveLoopStart.toFixed(1)}) → B (${effectiveLoopEnd.toFixed(1)} PPQ). Click to reset A/B loop to full length.`
+                : 'Drag the blue A and B flags on the top ruler to loop a specific bar region'
+            }
+          >
+            {isCustomLoopActive
+              ? `A/B ${effectiveLoopStart.toFixed(1)}–${effectiveLoopEnd.toFixed(1)} ✕`
+              : 'A/B Loop'}
+          </button>
+        )}
 
         <div className="w-px h-3.5 bg-neutral-700 mx-1" />
 

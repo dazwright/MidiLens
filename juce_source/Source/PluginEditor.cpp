@@ -272,6 +272,13 @@ void MidiPreviewerAudioProcessorEditor::handleSyncParams(const juce::var& rawPay
 
     if (payload.hasProperty("manualTempo"))
         setParam(MidiPreviewerAudioProcessor::paramManualTempo, static_cast<float>(payload["manualTempo"]));
+
+    if (payload.hasProperty("loopStartPpq") || payload.hasProperty("loopEndPpq"))
+    {
+        const double lStart = static_cast<double>(payload.getProperty("loopStartPpq", 0.0));
+        const double lEnd = static_cast<double>(payload.getProperty("loopEndPpq", -1.0));
+        audioProcessor.setLoopRangePpq(lStart, lEnd);
+    }
 }
 
 void MidiPreviewerAudioProcessorEditor::handleTransportCommand(const juce::var& rawPayload)
