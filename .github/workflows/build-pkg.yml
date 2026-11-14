@@ -13,18 +13,18 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js (if full repo)
         if: hashFiles('package.json') != ''
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Install web dependencies & bundle JUCE WebUI
         if: hashFiles('package.json') != ''
         run: |
-          npm install --no-audit --no-fund
+          npm install --legacy-peer-deps --no-audit --no-fund
           node scripts/build-juce-webui.mjs
 
       - name: Configure CMake (Universal arm64 + x86_64)
