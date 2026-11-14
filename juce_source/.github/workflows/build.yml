@@ -10,14 +10,14 @@ on:
 jobs:
   build-macos:
     name: Build macOS Universal (AU & VST3 + Installer)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Tools
+      - name: Ensure CMake is available
         run: |
-          brew install cmake ninja
+          command -v cmake >/dev/null 2>&1 || brew install cmake
 
       - name: Configure CMake (Universal arm64 + x86_64)
         run: |
@@ -34,18 +34,29 @@ jobs:
         run: |
           codesign --force --deep --sign - "build/MidiPreviewer_artefacts/Release/AU/MidiLens.component"
           codesign --force --deep --sign - "build/MidiPreviewer_artefacts/Release/VST3/MidiLens.vst3"
+          codesign --force --deep --sign - "build/MidiPreviewer_artefacts/Release/Standalone/MidiLens.app"
 
       - name: Build macOS .pkg Installer
         run: |
+          mkdir -p pkg_scripts
+          printf '%s\n' '#!/bin/bash' 'killall -9 AudioComponentRegistrar AUHostingServiceXPC AUHostingServiceXPC_arrow 2>/dev/null || true' 'exit 0' > pkg_scripts/postinstall
+          chmod +x pkg_scripts/postinstall
+
           mkdir -p pkg_root/Library/Audio/Plug-Ins/Components
           mkdir -p pkg_root/Library/Audio/Plug-Ins/VST3
+          mkdir -p pkg_root/Applications
           cp -R "build/MidiPreviewer_artefacts/Release/AU/MidiLens.component" pkg_root/Library/Audio/Plug-Ins/Components/
           cp -R "build/MidiPreviewer_artefacts/Release/VST3/MidiLens.vst3" pkg_root/Library/Audio/Plug-Ins/VST3/
+          cp -R "build/MidiPreviewer_artefacts/Release/Standalone/MidiLens.app" pkg_root/Applications/
+
           pkgbuild --root pkg_root \
+                   --scripts pkg_scripts \
                    --identifier com.dazcorp.midilens.pkg \
                    --version 1.0.0 \
                    --install-location / \
-                   MidiLens-macOS-Universal.pkg
+                   MidiLens-Component.pkg
+
+          productbuild --package MidiLens-Component.pkg MidiLens-macOS-Universal.pkg
 
       - name: Upload macOS Installer (.pkg)
         uses: actions/upload-artifact@v4
