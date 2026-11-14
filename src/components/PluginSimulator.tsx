@@ -2800,163 +2800,161 @@ export const PluginSimulator: React.FC = () => {
 
       {/* MIDI Transform Rack Panel (Groove, Quantise Strength, Swing, Legato/Staccato, Strum, Destructive Speed, Chords & Patterns) */}
       {showTransformPanel && (
-        <div className="shrink-0 bg-[#12151a] py-2 px-4 border-b-2 border-black/90 shadow-inner space-y-1.5 text-xs font-mono">
+        <div className="relative shrink-0 bg-[#12151a] py-2 pl-4 pr-10 border-b-2 border-black/90 shadow-inner space-y-1.5 text-xs font-mono">
+          <button
+            type="button"
+            onClick={() => setShowTransformPanel(false)}
+            className="absolute top-2 right-2.5 text-neutral-400 hover:text-white p-1 rounded hover:bg-neutral-800/80 transition z-10"
+            title="Close Transform panel"
+          >
+            <X className="w-4 h-4" />
+          </button>
+
           {/* Row 1: Rhythm, Timing & Groove */}
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-center gap-1.5 mr-1">
-                <span className="silkscreen-label text-sky-400 font-bold">TRANSFORM:</span>
-                <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-neutral-900 border border-neutral-700 text-neutral-300">
-                  {selectedNoteIds.size > 0 ? `${selectedNoteIds.size} Sel` : `All (${sequence.notes.length})`}
-                </span>
-              </div>
-
-              {/* Quantise Strength (%) */}
-              <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
-                <span className="text-neutral-400 text-[10px]">Q-Str:</span>
-                <input
-                  type="range"
-                  min={10}
-                  max={100}
-                  step={5}
-                  value={params.quantizeStrength ?? 100}
-                  onChange={(e) =>
-                    setParams((p) => ({ ...p, quantizeStrength: Number(e.target.value) }))
-                  }
-                  className="w-16 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-amber-500"
-                  title="Quantise pull strength (50% = loose tighten, 100% = hard snap)"
-                />
-                <span className="text-amber-400 font-bold text-[10px] w-8 text-right">
-                  {params.quantizeStrength ?? 100}%
-                </span>
-                <button
-                  type="button"
-                  onClick={applyTimingQuantize}
-                  className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px] uppercase"
-                  title={`Quantise to ${params.quantizeGrid} grid at ${params.quantizeStrength ?? 100}% strength`}
-                >
-                  Quantise
-                </button>
-              </div>
-
-              {/* Swing / Shuffle (%) */}
-              <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
-                <span className="text-neutral-400 text-[10px]">Swing:</span>
-                <div className="flex gap-0.5">
-                  {(['1/8', '1/16'] as const).map((g) => (
-                    <button
-                      key={g}
-                      type="button"
-                      onClick={() => setSwingGrid(g)}
-                      className={`px-1 py-0.5 rounded text-[9px] font-bold ${
-                        swingGrid === g ? 'bg-sky-500 text-black' : 'text-neutral-400 hover:text-white'
-                      }`}
-                    >
-                      {g}
-                    </button>
-                  ))}
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={1}
-                  value={swingPercent}
-                  onChange={(e) => setSwingPercent(Number(e.target.value))}
-                  className="w-16 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-sky-400"
-                />
-                <span className="text-sky-300 font-bold text-[10px] w-7 text-right">{swingPercent}%</span>
-                <button
-                  type="button"
-                  onClick={applySwing}
-                  className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px] uppercase"
-                  title="Push off-beat 8ths or 16ths for swing/shuffle groove"
-                >
-                  Apply
-                </button>
-              </div>
-
-              {/* Legato / Overlap Fix & Staccato */}
-              <div className="flex items-center gap-1 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
-                <button
-                  type="button"
-                  onClick={applyLegato}
-                  className="hardware-button px-2 py-0.5 text-emerald-300 font-bold rounded text-[9.5px] uppercase"
-                  title="Extend or trim notes cleanly to touch next onset (removes gaps and overlaps)"
-                >
-                  Legato / Fix
-                </button>
-                <button
-                  type="button"
-                  onClick={applyStaccato}
-                  className="hardware-button px-2 py-0.5 text-neutral-300 font-bold rounded text-[9.5px] uppercase"
-                  title="Shorten note durations by 50%"
-                >
-                  Staccato 50%
-                </button>
-              </div>
-
-              {/* Strum / Flam */}
-              <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
-                <span className="text-neutral-400 text-[10px]">Strum:</span>
-                <input
-                  type="range"
-                  min={5}
-                  max={80}
-                  step={5}
-                  value={strumMs}
-                  onChange={(e) => setStrumMs(Number(e.target.value))}
-                  className="w-14 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-emerald-400"
-                />
-                <span className="text-emerald-300 font-bold text-[10px] w-8">{strumMs}ms</span>
-                <button
-                  type="button"
-                  onClick={() => applyStrum('up')}
-                  className="hardware-button px-1.5 py-0.5 text-emerald-300 font-bold rounded text-[9.5px]"
-                  title="Strum chords low-to-high (Up-Strum)"
-                >
-                  ↑
-                </button>
-                <button
-                  type="button"
-                  onClick={() => applyStrum('down')}
-                  className="hardware-button px-1.5 py-0.5 text-emerald-300 font-bold rounded text-[9.5px]"
-                  title="Strum chords high-to-low (Down-Strum)"
-                >
-                  ↓
-                </button>
-              </div>
-
-              {/* Destructive Half/Double Speed Resize */}
-              <div className="flex items-center gap-1 bg-[#0c0e10] px-2 py-1 rounded border border-amber-700/50 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
-                <span className="text-amber-400/90 text-[9.5px] font-bold">GRID RESIZE:</span>
-                <button
-                  type="button"
-                  onClick={() => applyDestructiveSpeed(0.5)}
-                  className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px]"
-                  title="Destructively compress notes 0.5× (Double-Time) so dragging to Logic Pro drops double-time notes onto the grid"
-                >
-                  0.5× (2× Spd)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => applyDestructiveSpeed(2.0)}
-                  className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px]"
-                  title="Destructively stretch notes 2× (Half-Time) so dragging to Logic Pro drops half-time notes onto the grid"
-                >
-                  2× (0.5× Spd)
-                </button>
-              </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1.5 mr-1">
+              <span className="silkscreen-label text-sky-400 font-bold">TRANSFORM:</span>
+              <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-neutral-900 border border-neutral-700 text-neutral-300">
+                {selectedNoteIds.size > 0 ? `${selectedNoteIds.size} Sel` : `All (${sequence.notes.length})`}
+              </span>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setShowTransformPanel(false)}
-              className="text-neutral-400 hover:text-white p-1 rounded transition"
-              title="Close Transform panel"
-            >
-              <X className="w-4 h-4" />
-            </button>
+            {/* Quantise Strength (%) */}
+            <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+              <span className="text-neutral-400 text-[10px]">Q-Str:</span>
+              <input
+                type="range"
+                min={10}
+                max={100}
+                step={5}
+                value={params.quantizeStrength ?? 100}
+                onChange={(e) =>
+                  setParams((p) => ({ ...p, quantizeStrength: Number(e.target.value) }))
+                }
+                className="w-16 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-amber-500"
+                title="Quantise pull strength (50% = loose tighten, 100% = hard snap)"
+              />
+              <span className="text-amber-400 font-bold text-[10px] w-8 text-right">
+                {params.quantizeStrength ?? 100}%
+              </span>
+              <button
+                type="button"
+                onClick={applyTimingQuantize}
+                className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px] uppercase"
+                title={`Quantise to ${params.quantizeGrid} grid at ${params.quantizeStrength ?? 100}% strength`}
+              >
+                Quantise
+              </button>
+            </div>
+
+            {/* Swing / Shuffle (%) */}
+            <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+              <span className="text-neutral-400 text-[10px]">Swing:</span>
+              <div className="flex gap-0.5">
+                {(['1/8', '1/16'] as const).map((g) => (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => setSwingGrid(g)}
+                    className={`px-1 py-0.5 rounded text-[9px] font-bold ${
+                      swingGrid === g ? 'bg-sky-500 text-black' : 'text-neutral-400 hover:text-white'
+                    }`}
+                  >
+                    {g}
+                  </button>
+                ))}
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={1}
+                value={swingPercent}
+                onChange={(e) => setSwingPercent(Number(e.target.value))}
+                className="w-16 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-sky-400"
+              />
+              <span className="text-sky-300 font-bold text-[10px] w-7 text-right">{swingPercent}%</span>
+              <button
+                type="button"
+                onClick={applySwing}
+                className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px] uppercase"
+                title="Push off-beat 8ths or 16ths for swing/shuffle groove"
+              >
+                Apply
+              </button>
+            </div>
+
+            {/* Legato / Overlap Fix & Staccato */}
+            <div className="flex items-center gap-1 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+              <button
+                type="button"
+                onClick={applyLegato}
+                className="hardware-button px-2 py-0.5 text-emerald-300 font-bold rounded text-[9.5px] uppercase"
+                title="Extend or trim notes cleanly to touch next onset (removes gaps and overlaps)"
+              >
+                Legato / Fix
+              </button>
+              <button
+                type="button"
+                onClick={applyStaccato}
+                className="hardware-button px-2 py-0.5 text-neutral-300 font-bold rounded text-[9.5px] uppercase"
+                title="Shorten note durations by 50%"
+              >
+                Staccato 50%
+              </button>
+            </div>
+
+            {/* Strum / Flam */}
+            <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+              <span className="text-neutral-400 text-[10px]">Strum:</span>
+              <input
+                type="range"
+                min={5}
+                max={80}
+                step={5}
+                value={strumMs}
+                onChange={(e) => setStrumMs(Number(e.target.value))}
+                className="w-14 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-emerald-400"
+              />
+              <span className="text-emerald-300 font-bold text-[10px] w-8">{strumMs}ms</span>
+              <button
+                type="button"
+                onClick={() => applyStrum('up')}
+                className="hardware-button px-1.5 py-0.5 text-emerald-300 font-bold rounded text-[9.5px]"
+                title="Strum chords low-to-high (Up-Strum)"
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                onClick={() => applyStrum('down')}
+                className="hardware-button px-1.5 py-0.5 text-emerald-300 font-bold rounded text-[9.5px]"
+                title="Strum chords high-to-low (Down-Strum)"
+              >
+                ↓
+              </button>
+            </div>
+
+            {/* Destructive Half/Double Speed Resize */}
+            <div className="flex items-center gap-1 bg-[#0c0e10] px-2 py-1 rounded border border-amber-700/50 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+              <span className="text-amber-400/90 text-[9.5px] font-bold">GRID RESIZE:</span>
+              <button
+                type="button"
+                onClick={() => applyDestructiveSpeed(0.5)}
+                className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px]"
+                title="Destructively compress notes 0.5× (Double-Time) so dragging to Logic Pro drops double-time notes onto the grid"
+              >
+                0.5× (2× Spd)
+              </button>
+              <button
+                type="button"
+                onClick={() => applyDestructiveSpeed(2.0)}
+                className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px]"
+                title="Destructively stretch notes 2× (Half-Time) so dragging to Logic Pro drops half-time notes onto the grid"
+              >
+                2× (0.5× Spd)
+              </button>
+            </div>
           </div>
 
           {/* Row 2: Pitch, Chords, Patterns & Layer Extraction */}
