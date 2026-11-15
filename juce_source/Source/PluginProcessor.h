@@ -113,29 +113,6 @@ public:
     std::vector<int> getActivePitches() const;
     KeyDetectionResult getDetectedKey() const;
 
-    struct HostKeyInfo
-    {
-        int rootPitch { 0 }; // 0 = C
-        bool isMinor { false };
-        bool isDetected { false };
-
-        juce::String getKeyName() const
-        {
-            static const char* noteNames[] = { "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B" };
-            juce::String root = noteNames[(rootPitch % 12 + 12) % 12];
-            return root + (isMinor ? " min" : " maj");
-        }
-    };
-
-    HostKeyInfo getHostKey() const
-    {
-        HostKeyInfo info;
-        info.rootPitch = hostKeyRoot.load(std::memory_order_relaxed);
-        info.isMinor = hostKeyIsMinor.load(std::memory_order_relaxed);
-        info.isDetected = hostKeyDetected.load(std::memory_order_relaxed);
-        return info;
-    }
-
     // Parameter layout & APVTS
     juce::AudioProcessorValueTreeState apvts;
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -209,9 +186,6 @@ private:
     std::atomic<bool> hostTimeSigDetected { false };
     std::atomic<bool> hostIsPlaying { false };
     std::atomic<bool> pendingAllNotesOff { false };
-    std::atomic<int> hostKeyRoot { 0 };
-    std::atomic<bool> hostKeyIsMinor { false };
-    std::atomic<bool> hostKeyDetected { false };
 
     // Cached audio parameters (updated per block)
     std::atomic<float>* transposeParam { nullptr };

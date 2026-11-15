@@ -261,34 +261,6 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 {
     const int numSamples = std::max(1, buffer.getNumSamples() > 0 ? buffer.getNumSamples() : getBlockSize());
 
-    // Only accept explicit MIDI Key Signature meta-events (FF 59 02) if the host explicitly sends them;
-    // never infer the DAW's global project key by listening to incoming track notes.
-    for (const auto metadata : midiMessages)
-    {
-        auto msg = metadata.getMessage();
-        if (msg.isKeySignatureMetaEvent())
-        {
-            const int sf = msg.getKeySignatureNumberOfSharpsOrFlats();
-            const bool isMinor = !msg.isKeySignatureMajorKey();
-            const int root = isMinor ? ((9 + sf * 7) % 12 + 12) % 12
-                                     : ((sf * 7) % 12 + 12) % 12;
-            hostKeyRoot.store(root, std::memory_order_relaxed);
-            hostKeyIsMinor.store(isMinor, std::memory_order_relaxed);
-            hostKeyDetected.store(true, std::memory_order_relaxed);
-        }
-        else if (msg.isMetaEvent() && msg.getRawDataSize() >= 5 && msg.getRawData()[1] == 0x59)
-        {
-            const auto* rawData = msg.getRawData();
-            const int sf = static_cast<int8_t>(rawData[3]);
-            const bool isMinor = (rawData[4] != 0);
-            const int root = isMinor ? ((9 + sf * 7) % 12 + 12) % 12
-                                     : ((sf * 7) % 12 + 12) % 12;
-            hostKeyRoot.store(root, std::memory_order_relaxed);
-            hostKeyIsMinor.store(isMinor, std::memory_order_relaxed);
-            hostKeyDetected.store(true, std::memory_order_relaxed);
-        }
-    }
-
     double currentBpm = hostBpm.load(std::memory_order_relaxed);
     bool isHostPlayingNow = false;
     double hostPpq = 0.0;

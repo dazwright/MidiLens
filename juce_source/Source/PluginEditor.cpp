@@ -895,7 +895,6 @@ void MidiPreviewerAudioProcessorEditor::timerCallback()
     const int hostTimeSigDenom = audioProcessor.getHostTimeSigDenominator();
     const bool hostTimeSigDetected = audioProcessor.isHostTimeSigDetected();
     const bool hostIsPlaying = audioProcessor.isHostPlaying();
-    const auto hostKey = audioProcessor.getHostKey();
     const bool isDawConnected = audioProcessor.wrapperType != juce::AudioProcessor::wrapperType_Standalone;
     auto activePitches = audioProcessor.getActivePitches();
 
@@ -908,9 +907,6 @@ void MidiPreviewerAudioProcessorEditor::timerCallback()
         && hostTimeSigDenom == lastTelemetry.hostTimeSigDenom
         && hostTimeSigDetected == lastTelemetry.hostTimeSigDetected
         && hostIsPlaying == lastTelemetry.hostIsPlaying
-        && hostKey.rootPitch == lastTelemetry.hostKeyRoot
-        && hostKey.isMinor == lastTelemetry.hostKeyIsMinor
-        && hostKey.isDetected == lastTelemetry.hostKeyDetected
         && isDawConnected == lastTelemetry.isDawConnected
         && activePitches == lastTelemetry.activePitches)
     {
@@ -925,9 +921,6 @@ void MidiPreviewerAudioProcessorEditor::timerCallback()
     lastTelemetry.hostTimeSigDenom = hostTimeSigDenom;
     lastTelemetry.hostTimeSigDetected = hostTimeSigDetected;
     lastTelemetry.hostIsPlaying = hostIsPlaying;
-    lastTelemetry.hostKeyRoot = hostKey.rootPitch;
-    lastTelemetry.hostKeyIsMinor = hostKey.isMinor;
-    lastTelemetry.hostKeyDetected = hostKey.isDetected;
     lastTelemetry.isDawConnected = isDawConnected;
     lastTelemetry.activePitches = activePitches;
     lastTelemetry.initialized = true;
@@ -941,9 +934,6 @@ void MidiPreviewerAudioProcessorEditor::timerCallback()
     obj->setProperty("hostTimeSigDenominator", hostTimeSigDenom);
     obj->setProperty("hostTimeSigDetected", hostTimeSigDetected);
     obj->setProperty("hostIsPlaying", hostIsPlaying);
-    obj->setProperty("hostKeyRoot", hostKey.rootPitch);
-    obj->setProperty("hostKeyIsMinor", hostKey.isMinor);
-    obj->setProperty("hostKeyDetected", hostKey.isDetected);
     obj->setProperty("isDawConnected", isDawConnected);
 
     juce::Array<juce::var> pitchArr;

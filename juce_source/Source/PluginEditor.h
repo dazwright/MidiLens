@@ -64,9 +64,6 @@ private:
         int hostTimeSigDenom { 4 };
         bool hostTimeSigDetected { false };
         bool hostIsPlaying { false };
-        int hostKeyRoot { -1 };
-        bool hostKeyIsMinor { false };
-        bool hostKeyDetected { false };
         bool isDawConnected { false };
         std::vector<int> activePitches;
         bool initialized { false };

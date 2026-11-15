@@ -20,6 +20,11 @@ import {
   Plus,
   RefreshCw,
   Star,
+  AudioWaveform,
+  Piano,
+  Music2,
+  Drum,
+  Repeat,
 } from 'lucide-react';
 
 export function getLibraryFileKey(file: ScannedMidiFile): string {
@@ -70,14 +75,25 @@ export function detectCategoryTag(relativePath: string, name: string): string {
   return 'General / Uncategorized';
 }
 
-export const CATEGORY_ICONS: Record<string, string> = {
-  'Bass': '🎸',
-  'Chords & Keys': '🎹',
-  'Melody & Lead': '🎼',
-  'Drums & Rhythm': '🥁',
-  'Arps & Sequences': '🌀',
-  'General / Uncategorized': '📁',
-};
+function renderCategoryIcon(category: string, isSelected: boolean): React.ReactNode {
+  const iconClass = `w-3.5 h-3.5 shrink-0 ${
+    isSelected ? 'text-amber-400' : 'text-slate-400 group-hover:text-amber-300'
+  } transition-colors`;
+  switch (category) {
+    case 'Bass':
+      return <AudioWaveform className={iconClass} />;
+    case 'Chords & Keys':
+      return <Piano className={iconClass} />;
+    case 'Melody & Lead':
+      return <Music2 className={iconClass} />;
+    case 'Drums & Rhythm':
+      return <Drum className={iconClass} />;
+    case 'Arps & Sequences':
+      return <Repeat className={iconClass} />;
+    default:
+      return <Folder className={iconClass} />;
+  }
+}
 
 export const LibraryModal: React.FC<LibraryModalProps> = ({
   isOpen,
@@ -551,7 +567,7 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
               >
                 <option value="ALL" className="bg-[#181a22]">All Keys</option>
                 <option value="MATCH_PROJECT" className="bg-[#181a22]">
-                  Match Project ({getNoteName(projectKeyRoot)})
+                  Match Current Scale ({getNoteName(projectKeyRoot)})
                 </option>
                 {Array.from({ length: 12 }).map((_, i) => (
                   <option key={i} value={String(i)} className="bg-[#181a22]">
@@ -702,7 +718,7 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
 
               {categoryList.map((cat) => {
                 const count = categoryMap[cat]?.length || 0;
-                const icon = CATEGORY_ICONS[cat] || '📁';
+                const isSelected = selectedCategory === cat;
                 return (
                   <button
                     key={cat}
@@ -711,13 +727,13 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
                       setVisibleCount(60);
                     }}
                     className={`flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-mono transition text-left group ${
-                      selectedCategory === cat
+                      isSelected
                         ? 'bg-amber-500/20 border border-amber-500/40 text-amber-300 font-bold'
                         : 'text-slate-300 hover:bg-slate-800/60 border border-transparent'
                     }`}
                   >
                     <div className="flex items-center gap-2.5 truncate">
-                      <span className="text-sm shrink-0">{icon}</span>
+                      {renderCategoryIcon(cat, isSelected)}
                       <span className="truncate">{cat}</span>
                     </div>
                     <span className="text-[10px] text-slate-500 group-hover:text-slate-300 font-mono shrink-0 ml-1">
@@ -735,18 +751,32 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
             <div className="px-4 py-2 bg-[#141620]/80 border-b border-slate-800/60 flex items-center justify-between text-xs font-mono text-slate-400">
               <div className="flex items-center gap-2 truncate">
                 <span className="text-slate-500">View:</span>
-                <span className="text-amber-400 font-semibold truncate">
-                  {viewMode === 'explorer'
-                    ? selectedFolder === 'ALL'
-                      ? '📁 All Folders'
-                      : `📁 ${selectedFolder}`
-                    : viewMode === 'categories'
-                    ? selectedCategory === 'ALL'
-                      ? '🏷️ All Categories'
-                      : `🏷️ ${selectedCategory}`
-                    : viewMode === 'favorites'
-                    ? '★ Starred Favourites'
-                    : '📋 All Files'}
+                <span className="flex items-center gap-1.5 text-amber-400 font-semibold truncate">
+                  {viewMode === 'explorer' ? (
+                    <>
+                      <FolderOpen className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate">{selectedFolder === 'ALL' ? 'All Folders' : selectedFolder}</span>
+                    </>
+                  ) : viewMode === 'categories' ? (
+                    <>
+                      {selectedCategory === 'ALL' ? (
+                        <Tag className="w-3.5 h-3.5 shrink-0" />
+                      ) : (
+                        renderCategoryIcon(selectedCategory, true)
+                      )}
+                      <span className="truncate">{selectedCategory === 'ALL' ? 'All Categories' : selectedCategory}</span>
+                    </>
+                  ) : viewMode === 'favorites' ? (
+                    <>
+                      <Star className="w-3.5 h-3.5 shrink-0 fill-amber-400" />
+                      <span>Starred Favourites</span>
+                    </>
+                  ) : (
+                    <>
+                      <Layers className="w-3.5 h-3.5 shrink-0" />
+                      <span>All Files</span>
+                    </>
+                  )}
                 </span>
                 <span className="text-slate-600">({processedFiles.length} items)</span>
               </div>

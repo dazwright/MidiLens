@@ -299,8 +299,6 @@ export const PluginSimulator: React.FC = () => {
   const [showGeneratorPanel, setShowGeneratorPanel] = useState(false);
   const [generatorType, setGeneratorType] = useState<GeneratorPatternType>('melody');
   const [generatorBars, setGeneratorBars] = useState<2 | 4 | 8>(4);
-  const [isDawHostConnected, setIsDawHostConnected] = useState(false);
-  const [dawKeyDetected, setDawKeyDetected] = useState(false);
   const [dawHostBpm, setDawHostBpm] = useState<number | null>(null);
   const [dawHostTimeSig, setDawHostTimeSig] = useState<{ num: number; den: number } | null>(null);
   const genCounterRef = useRef(0);
@@ -533,9 +531,6 @@ export const PluginSimulator: React.FC = () => {
       if (typeof payload.isPlaying === 'boolean') {
         setIsPlaying(payload.isPlaying);
       }
-      if (typeof payload.isDawConnected === 'boolean') {
-        setIsDawHostConnected(payload.isDawConnected);
-      }
       if (
         typeof payload.hostBpm === 'number' &&
         payload.hostBpm >= 20 &&
@@ -555,23 +550,6 @@ export const PluginSimulator: React.FC = () => {
         const num = payload.hostTimeSigNumerator;
         const den = payload.hostTimeSigDenominator;
         setDawHostTimeSig((prev) => (prev && prev.num === num && prev.den === den ? prev : { num, den }));
-      }
-      if (payload.hostKeyDetected) {
-        setDawKeyDetected(true);
-        setIsDawHostConnected(true);
-      }
-      if (payload.hostKeyDetected && typeof payload.hostKeyRoot === 'number') {
-        const nextScale: ScaleType = payload.hostKeyIsMinor ? 'minor' : 'major';
-        setParams((prev) => {
-          if (prev.projectKeyRoot === payload.hostKeyRoot && prev.projectScaleType === nextScale) {
-            return prev;
-          }
-          return {
-            ...prev,
-            projectKeyRoot: payload.hostKeyRoot,
-            projectScaleType: nextScale,
-          };
-        });
       }
     });
 
@@ -1037,51 +1015,9 @@ export const PluginSimulator: React.FC = () => {
     }
   }, [params.syncMode, dawHostBpm, dawHostTimeSig]);
 
-  // Sync To Project Key & DAW BPM/Meter (matches active key, transpose, and host DAW tempo/meter)
-  const syncToProjectKey = () => {
-    const targetScaleName = SCALE_DEFINITIONS[params.projectScaleType]?.name || params.projectScaleType;
-    const keyLabel = `${getNoteName(params.projectKeyRoot)} ${targetScaleName}`;
-    pushHistorySnapshot(
-      dawHostBpm !== null
-        ? `Sync to DAW (${keyLabel} · ${dawHostBpm} BPM)`
-        : `Sync to Project Key (${keyLabel})`
-    );
-    const semitones = calculateSemitoneOffsetToTarget(keyResult.rootPitch, params.projectKeyRoot);
-    setParams((prev) => ({
-      ...prev,
-      scaleRoot: prev.projectKeyRoot,
-      scaleType: prev.projectScaleType,
-      transpose: semitones,
-      syncMode: dawHostBpm !== null || dawHostTimeSig !== null ? 'daw' : prev.syncMode,
-    }));
-
-    if (dawHostBpm !== null || dawHostTimeSig !== null) {
-      setSequence((prev) => ({
-        ...prev,
-        bpm: dawHostBpm ?? prev.bpm,
-        timeSigNumerator: dawHostTimeSig?.num ?? (prev.timeSigNumerator || 4),
-        timeSigDenominator: dawHostTimeSig?.den ?? (prev.timeSigDenominator || 4),
-      }));
-      if (dawHostBpm !== null) {
-        setTempoInputValue(String(dawHostBpm));
-        synthAudioEngine.setTempo(dawHostBpm);
-      }
-      showNotification(
-        `✓ Synced to Project: ${keyLabel}${dawHostBpm !== null ? ` @ ${dawHostBpm} BPM` : ''}${
-          dawHostTimeSig ? ` (${dawHostTimeSig.num}/${dawHostTimeSig.den})` : ''
-        }`,
-        3500
-      );
-    } else {
-      showNotification(`✓ Synced to Project Key: ${keyLabel}`, 3500);
-    }
-  };
-
-  // Active key selection for rule-based generation: DAW Project Key when connected, otherwise App Key
-  const isConnectedToDaw =
-    (isJuceNative() && (isDawHostConnected || dawKeyDetected)) || params.syncMode === 'daw';
-  const effectiveGenRoot = isConnectedToDaw ? params.projectKeyRoot : params.scaleRoot;
-  const effectiveGenScale = isConnectedToDaw ? params.projectScaleType : params.scaleType;
+  // Active key selection for rule-based generation: always uses Current Scale
+  const effectiveGenRoot = params.scaleRoot;
+  const effectiveGenScale = params.scaleType;
 
   const handleGeneratePattern = useCallback(
     (overrideType?: GeneratorPatternType) => {
@@ -1090,7 +1026,6 @@ export const PluginSimulator: React.FC = () => {
 
       const targetRoot = effectiveGenRoot;
       const targetScale = effectiveGenScale;
-      const keySourceLabel = isConnectedToDaw ? 'DAW Project Key' : 'App Key';
       const rootLabel = getNoteName(targetRoot);
       const scaleLabel = SCALE_DEFINITIONS[targetScale]?.name || targetScale;
 
@@ -1108,7 +1043,7 @@ export const PluginSimulator: React.FC = () => {
         bpm: sequence.bpm,
         timeSigNumerator: timeSigNum,
         timeSigDenominator: timeSigDen,
-        keySource: isConnectedToDaw ? 'daw' : 'app',
+        keySource: 'app',
       });
 
       const preservedLocked = lockedNotes.map((n, idx) => ({
@@ -1159,8 +1094,8 @@ export const PluginSimulator: React.FC = () => {
 
       showNotification(
         preservedLocked.length > 0
-          ? `Generated ${patternType.toUpperCase()} in ${rootLabel} ${scaleLabel} (${keySourceLabel}) · Preserved ${preservedLocked.length} locked note${preservedLocked.length > 1 ? 's' : ''}`
-          : `Generated ${patternType.toUpperCase()} in ${rootLabel} ${scaleLabel} (${keySourceLabel})`,
+          ? `Generated ${patternType.toUpperCase()} in ${rootLabel} ${scaleLabel} (Current Scale) · Preserved ${preservedLocked.length} locked note${preservedLocked.length > 1 ? 's' : ''}`
+          : `Generated ${patternType.toUpperCase()} in ${rootLabel} ${scaleLabel} (Current Scale)`,
         4000
       );
     },
@@ -1169,7 +1104,6 @@ export const PluginSimulator: React.FC = () => {
       generatorBars,
       effectiveGenRoot,
       effectiveGenScale,
-      isConnectedToDaw,
       sequence.bpm,
       sequence.timeSigNumerator,
       sequence.timeSigDenominator,
@@ -2694,13 +2628,6 @@ export const PluginSimulator: React.FC = () => {
               Q-Time{(params.quantizeStrength ?? 100) < 100 ? ` ${params.quantizeStrength}%` : ''}
             </button>
           </div>
-
-          <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]" title="Detected original MIDI key">
-            <span className="silkscreen-label text-neutral-500">ORIG:</span>
-            <span className="text-xs font-bold text-emerald-400 font-mono phosphor-glow-green">
-              {sequence.notes.length > 0 ? keyResult.keyName : '—'}
-            </span>
-          </div>
         </div>
       </div>
 
@@ -2709,7 +2636,7 @@ export const PluginSimulator: React.FC = () => {
         {/* Left: Active Scale Matrix */}
         <div className="flex flex-wrap items-center gap-2 shrink-0">
           <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
-            <span className="silkscreen-label text-neutral-500">SCALE:</span>
+            <span className="silkscreen-label text-neutral-500">CURRENT SCALE:</span>
             <select
               value={params.scaleRoot}
               onChange={(e) => setParams((p) => ({ ...p, scaleRoot: Number(e.target.value) }))}
@@ -2753,68 +2680,9 @@ export const PluginSimulator: React.FC = () => {
             </button>
           </div>
 
-          {/* DAW Project Key & BPM (Auto-reads MIDI Key Signature meta-event if sent by host; editable because AU hosts like Logic Pro only broadcast BPM/Meter, not global Project Key) */}
-          <div
-            className="flex items-center gap-1.5 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]"
-            title={
-              dawKeyDetected
-                ? 'Project Key received from host DAW MIDI Key Signature meta-event'
-                : 'Audio Units (Logic Pro) share live BPM & Meter with plugins, not global Project Key. Select your DAW Project Key here (auto-updates if host sends a Key Signature meta-event).'
-            }
-          >
-            <span className="silkscreen-label text-neutral-500">PROJECT:</span>
-            <select
-              value={params.projectKeyRoot}
-              onChange={(e) => {
-                setDawKeyDetected(false);
-                setParams((p) => ({ ...p, projectKeyRoot: Number(e.target.value) }));
-              }}
-              className="bg-transparent text-xs font-mono font-bold text-emerald-400 focus:outline-none cursor-pointer"
-              title="Set DAW Project Root Key"
-            >
-              {Array.from({ length: 12 }).map((_, i) => (
-                <option key={i} value={i} className="bg-[#121418] text-neutral-200">
-                  {getNoteName(i)}
-                </option>
-              ))}
-            </select>
-            <select
-              value={params.projectScaleType}
-              onChange={(e) => {
-                setDawKeyDetected(false);
-                setParams((p) => ({ ...p, projectScaleType: e.target.value as ScaleType }));
-              }}
-              className="bg-transparent text-[11px] font-mono font-bold text-emerald-400 focus:outline-none cursor-pointer"
-              title="Set DAW Project Scale"
-            >
-              <option value="major" className="bg-[#121418] text-neutral-200">maj</option>
-              <option value="minor" className="bg-[#121418] text-neutral-200">min</option>
-              <option value="dorian" className="bg-[#121418] text-neutral-200">dor</option>
-              <option value="phrygian" className="bg-[#121418] text-neutral-200">phr</option>
-              <option value="harmonic_minor" className="bg-[#121418] text-neutral-200">harm</option>
-            </select>
-            {dawKeyDetected && (
-              <span className="text-[8px] font-mono font-bold uppercase px-1 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                HOST
-              </span>
-            )}
-            {dawHostBpm !== null && (
-              <span className="text-xs font-mono font-bold text-emerald-400/90 tracking-wide">
-                · {dawHostBpm} BPM
-              </span>
-            )}
-            <button
-              onClick={syncToProjectKey}
-              className="hardware-button px-2 py-0.5 text-[9.5px] font-mono font-bold text-emerald-400 rounded transition uppercase"
-              title="Sync active key/transpose, BPM, and meter to Project Key & host DAW"
-            >
-              Sync
-            </button>
-          </div>
-
-          {/* Target Key Box (Selectable Root & Scale + Match button) */}
-          <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
-            <span className="silkscreen-label text-neutral-500">TARGET:</span>
+          {/* Target Scale Box (Selectable Root & Scale + Match button) */}
+          <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+            <span className="silkscreen-label text-neutral-500">TARGET SCALE:</span>
             <select
               value={params.targetKeyRoot}
               onChange={(e) => setParams((p) => ({ ...p, targetKeyRoot: Number(e.target.value) }))}
@@ -3235,25 +3103,13 @@ export const PluginSimulator: React.FC = () => {
               )}
 
               <div
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded border bg-[#0c0e10] shadow-[inset_0_2px_4px_rgba(0,0,0,0.85)] ${
-                  isConnectedToDaw ? 'border-emerald-600/60' : 'border-amber-600/50'
-                }`}
-                title={
-                  dawKeyDetected
-                    ? 'Project Key received from host MIDI Key Signature meta-event'
-                    : isConnectedToDaw
-                    ? 'Using Project Key set in the PROJECT strip (AU hosts like Logic Pro do not broadcast global Key Signature)'
-                    : 'Using active App Key (SCALE selector)'
-                }
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-amber-600/50 bg-[#0c0e10] shadow-[inset_0_2px_4px_rgba(0,0,0,0.85)]"
+                title="Using active Current Scale"
               >
                 <span className="silkscreen-label text-neutral-500">
-                  {dawKeyDetected ? 'DAW PROJECT KEY:' : isConnectedToDaw ? 'PROJECT KEY:' : 'APP KEY:'}
+                  CURRENT SCALE:
                 </span>
-                <span
-                  className={`font-bold text-[11px] ${
-                    isConnectedToDaw ? 'text-emerald-400 phosphor-glow-green' : 'text-amber-400 phosphor-glow-amber'
-                  }`}
-                >
+                <span className="font-bold text-[11px] text-amber-400 phosphor-glow-amber">
                   {getNoteName(effectiveGenRoot)}{' '}
                   {SCALE_DEFINITIONS[effectiveGenScale]?.name || effectiveGenScale}
                 </span>
@@ -3747,7 +3603,7 @@ export const PluginSimulator: React.FC = () => {
         scannedFiles={scannedFiles}
         savedFolderPaths={savedFolderPaths}
         libraryMeta={libraryMeta}
-        projectKeyRoot={params.projectKeyRoot}
+        projectKeyRoot={params.scaleRoot}
         projectBpm={sequence.bpm}
         onToggleFavorite={handleToggleFavorite}
         onAddTag={handleAddTag}
