@@ -27,11 +27,20 @@ jobs:
           npm install --legacy-peer-deps --no-audit --no-fund
           node scripts/build-juce-webui.mjs
 
+      - name: Install Microsoft.Web.WebView2 NuGet Package
+        shell: pwsh
+        run: |
+          $wv2Dir = "${{ github.workspace }}/_deps/Nuget"
+          New-Item -ItemType Directory -Force -Path $wv2Dir | Out-Null
+          nuget install Microsoft.Web.WebView2 -OutputDirectory $wv2Dir
+
       - name: Configure CMake (Visual Studio 2022 x64)
         shell: pwsh
         run: |
           $srcDir = if (Test-Path "juce_source/CMakeLists.txt") { "juce_source" } else { "." }
-          cmake -S $srcDir -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+          cmake -S $srcDir -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DJUCE_WEBVIEW2_PACKAGE_LOCATION="${{ github.workspace }}/_deps/Nuget"
 
       - name: Compile VST3 & Standalone
         run: cmake --build build --config Release --target MidiPreviewer_VST3 MidiPreviewer_Standalone

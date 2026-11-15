@@ -83,9 +83,19 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v5
 
-      - name: Configure CMake (Visual Studio 2022 x64)
+      - name: Install Microsoft.Web.WebView2 NuGet Package
+        shell: pwsh
         run: |
-          cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+          $wv2Dir = "${{ github.workspace }}/_deps/Nuget"
+          New-Item -ItemType Directory -Force -Path $wv2Dir | Out-Null
+          nuget install Microsoft.Web.WebView2 -OutputDirectory $wv2Dir
+
+      - name: Configure CMake (Visual Studio 2022 x64)
+        shell: pwsh
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DJUCE_WEBVIEW2_PACKAGE_LOCATION="${{ github.workspace }}/_deps/Nuget"
 
       - name: Compile VST3 & Standalone
         run: |

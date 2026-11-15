@@ -26,6 +26,25 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(JUCE)
 
+# Ensure Microsoft.Web.WebView2 NuGet package is available on Windows for JUCE 8 WebView2
+if(WIN32)
+    if(NOT DEFINED JUCE_WEBVIEW2_PACKAGE_LOCATION OR "${JUCE_WEBVIEW2_PACKAGE_LOCATION}" STREQUAL "")
+        find_program(NUGET_EXE NAMES nuget)
+        if(NUGET_EXE)
+            set(_webview2_nuget_dir "${CMAKE_BINARY_DIR}/_deps/Nuget")
+            file(GLOB _existing_wv2 "${_webview2_nuget_dir}/Microsoft.Web.WebView2*")
+            if(NOT _existing_wv2)
+                file(MAKE_DIRECTORY "${_webview2_nuget_dir}")
+                execute_process(
+                    COMMAND "${NUGET_EXE}" install Microsoft.Web.WebView2 -OutputDirectory "${_webview2_nuget_dir}"
+                    RESULT_VARIABLE _nuget_res
+                )
+            endif()
+            set(JUCE_WEBVIEW2_PACKAGE_LOCATION "${_webview2_nuget_dir}" CACHE PATH "Location of WebView2 NuGet package" FORCE)
+        endif()
+    endif()
+endif()
+
 # Embed self-contained offline React + Tailwind v4 WebUI assets directly into the C++ binary
 # Zero Node/npm, zero internet/CDNs, and zero external file paths required inside Logic Pro's sandbox
 juce_add_binary_data(MidiLensWebUIData
@@ -48,6 +67,7 @@ juce_add_plugin(MidiPreviewer
     NEEDS_MIDI_OUTPUT           TRUE
     IS_MIDI_EFFECT              TRUE
     EDITOR_WANTS_KEYBOARD_FOCUS TRUE
+    NEEDS_WEBVIEW2              TRUE
     PLUGIN_MANUFACTURER_CODE    "DazC"
     PLUGIN_CODE                 "MPrv"
     FORMATS                     AU VST3 Standalone
@@ -88,7 +108,11 @@ target_compile_definitions(MidiPreviewer
 )
 
 if(WIN32)
-    target_compile_definitions(MidiPreviewer PUBLIC JUCE_USE_WIN_WEBVIEW2=1)
+    target_compile_definitions(MidiPreviewer
+        PUBLIC
+            JUCE_USE_WIN_WEBVIEW2=1
+            JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1
+    )
 endif()
 
 target_link_libraries(MidiPreviewer

@@ -86,6 +86,14 @@ MidiPreviewerAudioProcessorEditor::MidiPreviewerAudioProcessorEditor(MidiPreview
       audioProcessor(p)
 {
     auto options = juce::WebBrowserComponent::Options{}
+       #if defined(_WIN32)
+        .withBackend(juce::WebBrowserComponent::Options::Backend::webview2)
+        .withWinWebView2Options(
+            juce::WebBrowserComponent::Options::WinWebView2{}
+                .withUserDataFolder(
+                    juce::File::getSpecialLocation(juce::File::tempDirectory)
+                        .getChildFile("MidiLensWebView2")))
+       #endif
         .withNativeIntegrationEnabled()
         .withResourceProvider(
             [this](const juce::String& url) -> std::optional<juce::WebBrowserComponent::Resource>
