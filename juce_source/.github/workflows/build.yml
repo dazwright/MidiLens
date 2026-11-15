@@ -133,11 +133,34 @@ jobs:
                    --install-location "/Applications" \
                    pkgs/MidiLens-App.pkg
 
-          (cd pkgs && productbuild --synthesize \
-            --package MidiLens-AU.pkg \
-            --package MidiLens-VST3.pkg \
-            --package MidiLens-App.pkg \
-            ../distribution.xml)
+          python3 -c '
+          from pathlib import Path
+          xml = """<?xml version="1.0" encoding="utf-8"?>
+          <installer-gui-script minSpecVersion="2">
+              <title>MidiLens 1.0.0</title>
+              <options customize="always" require-scripts="false" hostArchitectures="arm64,x86_64"/>
+              <domains enable_localSystem="true"/>
+              <choices-outline>
+                  <line choice="choice-au"/>
+                  <line choice="choice-vst3"/>
+                  <line choice="choice-app"/>
+              </choices-outline>
+              <choice id="choice-au" title="Audio Unit (AU MIDI FX)" description="Installs MidiLens.component into /Library/Audio/Plug-Ins/Components for Logic Pro and GarageBand." start_selected="true">
+                  <pkg-ref id="com.dazcorp.midilens.au.pkg"/>
+              </choice>
+              <choice id="choice-vst3" title="VST3 Plugin" description="Installs MidiLens.vst3 into /Library/Audio/Plug-Ins/VST3 for Ableton Live, Cubase, Reaper, FL Studio, and Studio One." start_selected="true">
+                  <pkg-ref id="com.dazcorp.midilens.vst3.pkg"/>
+              </choice>
+              <choice id="choice-app" title="Standalone Application" description="Installs MidiLens.app into /Applications." start_selected="true">
+                  <pkg-ref id="com.dazcorp.midilens.app.pkg"/>
+              </choice>
+              <pkg-ref id="com.dazcorp.midilens.au.pkg" version="1.0.0" onConclusion="none">MidiLens-AU.pkg</pkg-ref>
+              <pkg-ref id="com.dazcorp.midilens.vst3.pkg" version="1.0.0" onConclusion="none">MidiLens-VST3.pkg</pkg-ref>
+              <pkg-ref id="com.dazcorp.midilens.app.pkg" version="1.0.0" onConclusion="none">MidiLens-App.pkg</pkg-ref>
+          </installer-gui-script>
+          """
+          Path("distribution.xml").write_text("\n".join(line[10:] if line.startswith("          ") else line for line in xml.splitlines()))
+          '
 
           if [ "${{ steps.apple_signing.outputs.signed }}" = "true" ]; then
             productbuild --distribution distribution.xml --package-path pkgs \
