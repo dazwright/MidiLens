@@ -36,27 +36,49 @@ jobs:
           codesign --force --deep --sign - "build/MidiPreviewer_artefacts/Release/VST3/MidiLens.vst3"
           codesign --force --deep --sign - "build/MidiPreviewer_artefacts/Release/Standalone/MidiLens.app"
 
-      - name: Build macOS .pkg Installer
+      - name: Build safe macOS .pkg Installer
         run: |
           mkdir -p pkg_scripts
           printf '%s\n' '#!/bin/bash' 'killall -9 AudioComponentRegistrar AUHostingServiceXPC AUHostingServiceXPC_arrow 2>/dev/null || true' 'exit 0' > pkg_scripts/postinstall
           chmod +x pkg_scripts/postinstall
 
-          mkdir -p pkg_root/Library/Audio/Plug-Ins/Components
-          mkdir -p pkg_root/Library/Audio/Plug-Ins/VST3
-          mkdir -p pkg_root/Applications
-          cp -R "build/MidiPreviewer_artefacts/Release/AU/MidiLens.component" pkg_root/Library/Audio/Plug-Ins/Components/
-          cp -R "build/MidiPreviewer_artefacts/Release/VST3/MidiLens.vst3" pkg_root/Library/Audio/Plug-Ins/VST3/
-          cp -R "build/MidiPreviewer_artefacts/Release/Standalone/MidiLens.app" pkg_root/Applications/
+          mkdir -p stage_au stage_vst3 stage_app pkgs
+          cp -R "build/MidiPreviewer_artefacts/Release/AU/MidiLens.component" stage_au/
+          cp -R "build/MidiPreviewer_artefacts/Release/VST3/MidiLens.vst3" stage_vst3/
+          cp -R "build/MidiPreviewer_artefacts/Release/Standalone/MidiLens.app" stage_app/
 
-          pkgbuild --root pkg_root \
-                   --scripts pkg_scripts \
-                   --identifier com.dazcorp.midilens.pkg \
-                   --version 1.0.0 \
-                   --install-location / \
-                   MidiLens-Component.pkg
+          disable_relocation() {
+            python3 -c 'import plistlib, sys; p = sys.argv[1]; f = open(p, "rb"); data = plistlib.load(f); f.close(); [item.__setitem__("BundleIsRelocatable", False) for item in data]; f = open(p, "wb"); plistlib.dump(data, f); f.close()' "$1"
+          }
 
-          productbuild --package MidiLens-Component.pkg MidiLens-macOS-Universal.pkg
+          pkgbuild --analyze --root stage_au au.plist
+          disable_relocation au.plist
+          pkgbuild --root stage_au --component-plist au.plist --scripts pkg_scripts \
+                   --identifier com.dazcorp.midilens.au.pkg --version 1.0.0 \
+                   --install-location "/Library/Audio/Plug-Ins/Components" \
+                   pkgs/MidiLens-AU.pkg
+
+          pkgbuild --analyze --root stage_vst3 vst3.plist
+          disable_relocation vst3.plist
+          pkgbuild --root stage_vst3 --component-plist vst3.plist \
+                   --identifier com.dazcorp.midilens.vst3.pkg --version 1.0.0 \
+                   --install-location "/Library/Audio/Plug-Ins/VST3" \
+                   pkgs/MidiLens-VST3.pkg
+
+          pkgbuild --analyze --root stage_app app.plist
+          disable_relocation app.plist
+          pkgbuild --root stage_app --component-plist app.plist \
+                   --identifier com.dazcorp.midilens.app.pkg --version 1.0.0 \
+                   --install-location "/Applications" \
+                   pkgs/MidiLens-App.pkg
+
+          (cd pkgs && productbuild --synthesize \
+            --package MidiLens-AU.pkg \
+            --package MidiLens-VST3.pkg \
+            --package MidiLens-App.pkg \
+            ../distribution.xml)
+
+          productbuild --distribution distribution.xml --package-path pkgs MidiLens-macOS-Universal.pkg
 
       - name: Upload macOS Installer (.pkg)
         uses: actions/upload-artifact@v4
