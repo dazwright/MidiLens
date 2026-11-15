@@ -18,6 +18,7 @@ export const CodeExplorer: React.FC = () => {
   const [selectedFile, setSelectedFile] = useState<CodeFileEntry>(JUCE_CODE_FILES[0]);
   const [copied, setCopied] = useState(false);
   const [isZipping, setIsZipping] = useState(false);
+  const [zipError, setZipError] = useState<string | null>(null);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(selectedFile.content);
@@ -27,6 +28,7 @@ export const CodeExplorer: React.FC = () => {
 
   const handleDownloadZip = async () => {
     setIsZipping(true);
+    setZipError(null);
     try {
       const zip = new JSZip();
       const folder = zip.folder('MidiLens_JUCE_Project');
@@ -48,7 +50,7 @@ export const CodeExplorer: React.FC = () => {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (err) {
-      alert('Error creating zip: ' + (err as Error).message);
+      setZipError('ZIP export failed: ' + (err as Error).message);
     } finally {
       setIsZipping(false);
     }
@@ -125,6 +127,11 @@ export const CodeExplorer: React.FC = () => {
           <p className="text-[10px] text-zinc-500 text-center mt-2 font-mono">
             CMake + universal binary scripts ready for Xcode & Ninja
           </p>
+          {zipError && (
+            <p className="text-[10px] text-rose-400 text-center mt-1.5 font-mono">
+              {zipError}
+            </p>
+          )}
         </div>
       </div>
 

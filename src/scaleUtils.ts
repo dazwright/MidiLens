@@ -124,7 +124,6 @@ export function harmonizeNotes(
   scaleType: ScaleType
 ): MidiNote[] {
   const targetAll = selectedIds.size === 0;
-  const maxId = Math.max(0, ...notes.map((n) => n.id));
   const isScaleActive = scaleType !== 'chromatic';
   const intervals = isScaleActive ? (SCALE_DEFINITIONS[scaleType]?.intervals || [0]) : [];
 

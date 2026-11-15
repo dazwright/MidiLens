@@ -1489,14 +1489,16 @@ export function parseMidiFile(arrayBuffer: ArrayBuffer, fileName: string): MidiS
     let runningStatus = 0;
 
     while (offset < trackEnd && offset < data.byteLength) {
-      // Read variable-length delta time
+      // Read variable-length delta time (MIDI VLQ max 4 bytes)
       let delta = 0;
       let b = 0;
+      let vlqCount = 0;
       do {
-        if (offset >= data.byteLength) break;
+        if (offset >= trackEnd || offset >= data.byteLength) break;
         b = data.getUint8(offset++);
         delta = (delta << 7) | (b & 0x7f);
-      } while (b & 0x80);
+        vlqCount++;
+      } while ((b & 0x80) !== 0 && vlqCount < 4);
 
       currentTick += delta;
       if (offset >= data.byteLength) break;
@@ -1547,11 +1549,13 @@ export function parseMidiFile(arrayBuffer: ArrayBuffer, fileName: string): MidiS
         const metaType = data.getUint8(offset++);
         let metaLen = 0;
         let mb = 0;
+        let metaVlqCount = 0;
         do {
-          if (offset >= data.byteLength) break;
+          if (offset >= trackEnd || offset >= data.byteLength) break;
           mb = data.getUint8(offset++);
           metaLen = (metaLen << 7) | (mb & 0x7f);
-        } while (mb & 0x80);
+          metaVlqCount++;
+        } while ((mb & 0x80) !== 0 && metaVlqCount < 4);
 
         if (metaType === 0x51 && metaLen === 3 && offset + 2 < data.byteLength) {
           // Set Tempo: 3 bytes microseconds per quarter note
@@ -1569,11 +1573,13 @@ export function parseMidiFile(arrayBuffer: ArrayBuffer, fileName: string): MidiS
         // SysEx
         let sysLen = 0;
         let sb = 0;
+        let sysVlqCount = 0;
         do {
-          if (offset >= data.byteLength) break;
+          if (offset >= trackEnd || offset >= data.byteLength) break;
           sb = data.getUint8(offset++);
           sysLen = (sysLen << 7) | (sb & 0x7f);
-        } while (sb & 0x80);
+          sysVlqCount++;
+        } while ((sb & 0x80) !== 0 && sysVlqCount < 4);
         offset = Math.min(trackEnd, offset + sysLen);
       } else if (status === 0xf2) {
         // Song Position Pointer: 2 data bytes
@@ -1742,10 +1748,16 @@ export function serializeMidiFile(
     bytes.push((val >> 24) & 0xff, (val >> 16) & 0xff, (val >> 8) & 0xff, val & 0xff);
   };
 
+  const appendBytes = (target: number[], chunk: ArrayLike<number>) => {
+    for (let i = 0; i < chunk.length; i++) {
+      target.push(chunk[i]);
+    }
+  };
+
   const encodeVarLength = (val: number): number[] => {
-    const buffer: number[] = [];
-    buffer.push(val & 0x7f);
-    let shifted = val >> 7;
+    const safeVal = Math.max(0, Math.floor(val));
+    const buffer: number[] = [safeVal & 0x7f];
+    let shifted = safeVal >> 7;
     while (shifted > 0) {
       buffer.push((shifted & 0x7f) | 0x80);
       shifted >>= 7;
@@ -1758,8 +1770,11 @@ export function serializeMidiFile(
   };
 
   const encodeMetaText = (type: number, text: string): number[] => {
-    const textBytes = Array.from(new TextEncoder().encode(text));
-    return [...encodeVarLength(0), 0xff, type, ...encodeVarLength(textBytes.length), ...textBytes];
+    const textBytes = new TextEncoder().encode(text);
+    const out: number[] = [0x00, 0xff, type];
+    appendBytes(out, encodeVarLength(textBytes.length));
+    appendBytes(out, textBytes);
+    return out;
   };
 
   interface MidiRawEvent {
@@ -1798,34 +1813,28 @@ export function serializeMidiFile(
 
     // Track 0
     const trackBytes: number[] = [];
-    // Track Name
-    trackBytes.push(...encodeMetaText(0x03, customTrackName));
+    appendBytes(trackBytes, encodeMetaText(0x03, customTrackName));
+    appendBytes(trackBytes, [0x00, 0xff, 0x51, 0x03, (mpqn >> 16) & 0xff, (mpqn >> 8) & 0xff, mpqn & 0xff]);
+    appendBytes(trackBytes, [0x00, 0xff, 0x58, 0x04, sequence.timeSigNumerator || 4, denPow, 24, 8]);
 
-    // Tempo meta event
-    trackBytes.push(...encodeVarLength(0), 0xff, 0x51, 0x03, (mpqn >> 16) & 0xff, (mpqn >> 8) & 0xff, mpqn & 0xff);
-
-    // Time Sig meta event
-    trackBytes.push(...encodeVarLength(0), 0xff, 0x58, 0x04, sequence.timeSigNumerator || 4, denPow, 24, 8);
-
-    // Note events
     const rawEvents = prepareNoteEvents();
     let lastTick = 0;
     for (const ev of rawEvents) {
       const delta = Math.max(0, ev.tick - lastTick);
       lastTick = ev.tick;
 
-      trackBytes.push(...encodeVarLength(delta));
+      appendBytes(trackBytes, encodeVarLength(delta));
       const status = (ev.type === 'on' ? 0x90 : 0x80) | ((ev.channel - 1) & 0x0f);
       trackBytes.push(status, ev.pitch, ev.velocity);
     }
 
-    // End of Track meta event
-    trackBytes.push(...encodeVarLength(ticksPerQuarter), 0xff, 0x2f, 0x00);
+    appendBytes(trackBytes, encodeVarLength(ticksPerQuarter));
+    trackBytes.push(0xff, 0x2f, 0x00);
 
     // Track Chunk 'MTrk'
     bytes.push(0x4d, 0x54, 0x72, 0x6b);
     writeUint32(trackBytes.length);
-    bytes.push(...trackBytes);
+    appendBytes(bytes, trackBytes);
   } else {
     // Type 1 (Multi-Track): Track 0 = Conductor (Tempo/TimeSig), Track 1 = Notes Track
     bytes.push(0x4d, 0x54, 0x68, 0x64);
@@ -1836,18 +1845,18 @@ export function serializeMidiFile(
 
     // Track 0: Conductor Track
     const conductorBytes: number[] = [];
-    conductorBytes.push(...encodeMetaText(0x03, 'Conductor Track'));
-    conductorBytes.push(...encodeVarLength(0), 0xff, 0x51, 0x03, (mpqn >> 16) & 0xff, (mpqn >> 8) & 0xff, mpqn & 0xff);
-    conductorBytes.push(...encodeVarLength(0), 0xff, 0x58, 0x04, sequence.timeSigNumerator || 4, denPow, 24, 8);
-    conductorBytes.push(...encodeVarLength(0), 0xff, 0x2f, 0x00);
+    appendBytes(conductorBytes, encodeMetaText(0x03, 'Conductor Track'));
+    appendBytes(conductorBytes, [0x00, 0xff, 0x51, 0x03, (mpqn >> 16) & 0xff, (mpqn >> 8) & 0xff, mpqn & 0xff]);
+    appendBytes(conductorBytes, [0x00, 0xff, 0x58, 0x04, sequence.timeSigNumerator || 4, denPow, 24, 8]);
+    conductorBytes.push(0x00, 0xff, 0x2f, 0x00);
 
     bytes.push(0x4d, 0x54, 0x72, 0x6b);
     writeUint32(conductorBytes.length);
-    bytes.push(...conductorBytes);
+    appendBytes(bytes, conductorBytes);
 
     // Track 1: Notes Track
     const notesTrackBytes: number[] = [];
-    notesTrackBytes.push(...encodeMetaText(0x03, customTrackName));
+    appendBytes(notesTrackBytes, encodeMetaText(0x03, customTrackName));
 
     const rawEvents = prepareNoteEvents();
     let lastTick = 0;
@@ -1855,16 +1864,17 @@ export function serializeMidiFile(
       const delta = Math.max(0, ev.tick - lastTick);
       lastTick = ev.tick;
 
-      notesTrackBytes.push(...encodeVarLength(delta));
+      appendBytes(notesTrackBytes, encodeVarLength(delta));
       const status = (ev.type === 'on' ? 0x90 : 0x80) | ((ev.channel - 1) & 0x0f);
       notesTrackBytes.push(status, ev.pitch, ev.velocity);
     }
 
-    notesTrackBytes.push(...encodeVarLength(ticksPerQuarter), 0xff, 0x2f, 0x00);
+    appendBytes(notesTrackBytes, encodeVarLength(ticksPerQuarter));
+    notesTrackBytes.push(0xff, 0x2f, 0x00);
 
     bytes.push(0x4d, 0x54, 0x72, 0x6b);
     writeUint32(notesTrackBytes.length);
-    bytes.push(...notesTrackBytes);
+    appendBytes(bytes, notesTrackBytes);
   }
 
   return new Uint8Array(bytes);

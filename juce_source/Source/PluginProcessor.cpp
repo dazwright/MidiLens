@@ -324,16 +324,28 @@ void MidiPreviewerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 
     if (newSequenceAvailable.load(std::memory_order_acquire))
     {
+        bool swapped = false;
+        bool shouldResetPlayhead = false;
         {
-            std::lock_guard<std::mutex> lock(sequenceExchangeMutex);
-            activeSequence = pendingSequence;
+            std::unique_lock<std::mutex> lock(sequenceExchangeMutex, std::try_to_lock);
+            if (lock.owns_lock() && pendingSequence != nullptr && retiredSequence == nullptr)
+            {
+                // Move displaced activeSequence into retiredSequence so zero heap deallocation occurs on the RT thread
+                retiredSequence = std::move(activeSequence);
+                activeSequence = std::move(pendingSequence);
+                newSequenceAvailable.store(false, std::memory_order_release);
+                shouldResetPlayhead = resetPlayheadOnSwap.exchange(false, std::memory_order_acq_rel);
+                swapped = true;
+            }
         }
-        newSequenceAvailable.store(false, std::memory_order_release);
-        flushAllNotesOff(midiMessages);
-        if (resetPlayheadOnSwap.exchange(false, std::memory_order_acq_rel))
+        if (swapped)
         {
-            currentPlayheadPpq.store(0.0, std::memory_order_relaxed);
-            lastPpqPosition = 0.0;
+            flushAllNotesOff(midiMessages);
+            if (shouldResetPlayhead)
+            {
+                currentPlayheadPpq.store(0.0, std::memory_order_relaxed);
+                lastPpqPosition = 0.0;
+            }
         }
     }
 
@@ -798,10 +810,12 @@ void MidiPreviewerAudioProcessor::loadMidiSequenceFromFile(const juce::File& mid
 void MidiPreviewerAudioProcessor::setSequenceSnapshot(std::shared_ptr<const SequenceSnapshot> newSnapshot, bool resetPlayhead)
 {
     std::lock_guard<std::mutex> lock(sequenceExchangeMutex);
+    // Free any previously retired sequence safely on the non-RT message thread
+    retiredSequence.reset();
     pendingSequence = std::move(newSnapshot);
     if (resetPlayhead)
         resetPlayheadOnSwap.store(true, std::memory_order_relaxed);
-    newSequenceAvailable.store(true, std::memory_order_release);
+    newSequenceAvailable.store(pendingSequence != nullptr, std::memory_order_release);
 }
 
 std::shared_ptr<const SequenceSnapshot> MidiPreviewerAudioProcessor::getSequenceSnapshot() const
@@ -817,6 +831,9 @@ void MidiPreviewerAudioProcessor::sendAudioCommand(const AudioCommand& cmd)
 
 void MidiPreviewerAudioProcessor::setSavedUiStateJson(const juce::String& json)
 {
+    if (json.getNumBytesAsUTF8() > static_cast<size_t>(maxUiStateJsonBytes))
+        return;
+
     std::lock_guard<std::mutex> lock(uiStateMutex);
     savedUiStateJson = json;
 }
@@ -1148,6 +1165,27 @@ std::vector<ScannedFileMetadata> MidiPreviewerAudioProcessor::getScannedFiles() 
     return store.files;
 }
 
+std::vector<ScannedFileMetadata> MidiPreviewerAudioProcessor::getScannedFilesSlice(size_t offset, size_t count, size_t& outTotal) const
+{
+    auto& store = getSharedLibraryStore();
+    std::lock_guard<std::mutex> lock(store.mutex);
+    outTotal = store.files.size();
+    if (offset >= outTotal || count == 0)
+        return {};
+
+    const size_t end = std::min(offset + count, outTotal);
+    return std::vector<ScannedFileMetadata>(
+        store.files.begin() + static_cast<ptrdiff_t>(offset),
+        store.files.begin() + static_cast<ptrdiff_t>(end));
+}
+
+size_t MidiPreviewerAudioProcessor::getScannedFilesCount() const
+{
+    auto& store = getSharedLibraryStore();
+    std::lock_guard<std::mutex> lock(store.mutex);
+    return store.files.size();
+}
+
 void MidiPreviewerAudioProcessor::clearGlobalLibrary()
 {
     auto& store = getSharedLibraryStore();
@@ -1167,6 +1205,9 @@ void MidiPreviewerAudioProcessor::retainFileChooser(std::shared_ptr<juce::FileCh
     if (chooser == nullptr)
         return;
     std::lock_guard<std::mutex> lock(uiStateMutex);
+    // Keep only the active chooser (and previous one during async callback completion) to prevent unbounded leaks
+    while (retainedFileChoosers.size() >= 2)
+        retainedFileChoosers.erase(retainedFileChoosers.begin());
     retainedFileChoosers.push_back(std::move(chooser));
 }
 

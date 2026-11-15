@@ -1,0 +1,59 @@
+name: Build Windows x64 (VST3 & Standalone)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+jobs:
+  build-windows-x64:
+    name: Build MidiLens Windows x64 (VST3 & Standalone)
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install web dependencies & bundle JUCE WebUI
+        if: hashFiles('package.json') != ''
+        run: |
+          npm install --legacy-peer-deps --no-audit --no-fund
+          node scripts/build-juce-webui.mjs
+
+      - name: Configure CMake (Visual Studio 2022 x64)
+        shell: pwsh
+        run: |
+          $srcDir = if (Test-Path "juce_source/CMakeLists.txt") { "juce_source" } else { "." }
+          cmake -S $srcDir -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+
+      - name: Compile VST3 & Standalone
+        run: cmake --build build --config Release --target MidiPreviewer_VST3 MidiPreviewer_Standalone
+
+      - name: Package Windows VST3 & Standalone ZIP
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist_win | Out-Null
+          Copy-Item -Recurse -Force "build\MidiPreviewer_artefacts\Release\VST3\MidiLens.vst3" "dist_win\"
+          Copy-Item -Force "build\MidiPreviewer_artefacts\Release\Standalone\MidiLens.exe" "dist_win\"
+          @"
+          MidiLens for Windows x64
+          ========================
+          1. Copy MidiLens.vst3 into:
+             C:\Program Files\Common Files\VST3\
+          2. Run MidiLens.exe anywhere for the Standalone app.
+          (Requires Microsoft Edge WebView2 Runtime, pre-installed on Windows 10/11.)
+          "@ | Set-Content -Path "dist_win\INSTALL-WINDOWS.txt" -Encoding UTF8
+          Compress-Archive -Path "dist_win\*" -DestinationPath "MidiLens-Windows-x64.zip" -Force
+
+      - name: Upload Windows Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MidiLens-Windows-x64
+          path: MidiLens-Windows-x64.zip

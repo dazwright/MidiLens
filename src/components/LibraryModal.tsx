@@ -23,7 +23,8 @@ import {
 } from 'lucide-react';
 
 export function getLibraryFileKey(file: ScannedMidiFile): string {
-  return file.nativePath || file.relativePath || file.name;
+  // Never persist raw OS home/username paths into metadata keys; rely on relative pack path + filename
+  return file.relativePath || file.name;
 }
 
 const PRESET_CUSTOM_TAGS = ['House', 'Trap', 'Chill', 'Melodic', 'Dark', 'Uplifting', 'Acid', 'Lo-Fi', 'Neo-Soul'];
@@ -124,16 +125,30 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     };
   }, [isOpen, scannedFiles, libraryMeta]);
 
-  // Group files into folder dictionary (only computed when modal is open so startup/streaming stays instant)
-  const { folderMap, folderList, categoryMap, categoryList } = useMemo(() => {
+  // Pre-index static per-file attributes (key/BPM filename hints, category, folder, lowercase search fields)
+  // only when the modal opens or the scanned file list changes so typing search queries stays instant on 30k+ files
+  const { folderList, categoryMap, categoryList, indexedFiles } = useMemo(() => {
     if (!isOpen) {
       return {
-        folderMap: {} as Record<string, { folderPath: string; folderName: string; fileIndexes: number[] }>,
         folderList: [] as { folderPath: string; folderName: string; fileIndexes: number[] }[],
         categoryMap: {} as Record<string, number[]>,
         categoryList: [] as string[],
+        indexedFiles: [] as {
+          file: ScannedMidiFile;
+          fileKey: string;
+          originalIndex: number;
+          inferredBpm?: number;
+          inferredRoot?: number;
+          inferredIsMinor?: boolean;
+          inferredKeyLabel?: string;
+          category: string;
+          folderPath: string;
+          nameLower: string;
+          relPathLower: string;
+        }[],
       };
     }
+
     const fMap: Record<string, { folderPath: string; folderName: string; fileIndexes: number[] }> = {};
     const cMap: Record<string, number[]> = {
       'Bass': [],
@@ -144,56 +159,70 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
       'General / Uncategorized': [],
     };
 
-    scannedFiles.forEach((file, idx) => {
-      const parts = file.relativePath.split('/');
-      const folderPath = parts.length > 1 ? parts.slice(0, -1).join('/') : 'Root Folder';
-      const folderName = parts.length > 1 ? parts[parts.length - 2] : 'Root Folder';
+    const indexed = scannedFiles.map((file, idx) => {
+      const lastSlash = file.relativePath.lastIndexOf('/');
+      const folderPath = lastSlash > 0 ? file.relativePath.slice(0, lastSlash) : 'Root Folder';
+      let folderName = 'Root Folder';
+      if (lastSlash > 0) {
+        const prevSlash = folderPath.lastIndexOf('/');
+        folderName = prevSlash >= 0 ? folderPath.slice(prevSlash + 1) : folderPath;
+      }
 
       if (!fMap[folderPath]) {
         fMap[folderPath] = { folderPath, folderName, fileIndexes: [] };
       }
       fMap[folderPath].fileIndexes.push(idx);
 
-      const tag = detectCategoryTag(file.relativePath, file.name);
-      if (!cMap[tag]) cMap[tag] = [];
-      cMap[tag].push(idx);
+      const category = detectCategoryTag(file.relativePath, file.name);
+      if (!cMap[category]) cMap[category] = [];
+      cMap[category].push(idx);
+
+      const inferred = inferHintsFromFilename(file.name, file.relativePath);
+      return {
+        file,
+        fileKey: getLibraryFileKey(file),
+        originalIndex: idx,
+        inferredBpm: inferred.bpm,
+        inferredRoot: inferred.rootPitch,
+        inferredIsMinor: inferred.isMinor,
+        inferredKeyLabel: inferred.keyLabel,
+        category,
+        folderPath,
+        nameLower: file.name.toLowerCase(),
+        relPathLower: file.relativePath.toLowerCase(),
+      };
     });
 
     const fList = Object.values(fMap).sort((a, b) => a.folderPath.localeCompare(b.folderPath));
     const cList = Object.keys(cMap).filter((cat) => cMap[cat].length > 0);
 
-    return { folderMap: fMap, folderList: fList, categoryMap: cMap, categoryList: cList };
+    return { folderList: fList, categoryMap: cMap, categoryList: cList, indexedFiles: indexed };
   }, [isOpen, scannedFiles]);
 
   // Filtered & Sorted File Items
   const processedFiles = useMemo(() => {
     if (!isOpen) return [];
-    let items = scannedFiles.map((file, originalIndex) => {
-      const fileKey = getLibraryFileKey(file);
-      const savedMeta = libraryMeta[fileKey];
-      const inferred =
-        savedMeta?.bpm === undefined || savedMeta?.detectedRoot === undefined
-          ? inferHintsFromFilename(file.name, file.relativePath)
-          : {};
-      const bpm = savedMeta?.bpm ?? file.bpm ?? inferred.bpm;
-      const rootPitch = savedMeta?.detectedRoot ?? inferred.rootPitch;
-      const isMinor = savedMeta?.detectedIsMinor ?? inferred.isMinor;
-      const keyLabel = savedMeta?.detectedKey ?? inferred.keyLabel;
+    let items = indexedFiles.map((entry) => {
+      const savedMeta = libraryMeta[entry.fileKey];
+      const bpm = savedMeta?.bpm ?? entry.file.bpm ?? entry.inferredBpm;
+      const rootPitch = savedMeta?.detectedRoot ?? entry.inferredRoot;
+      const isMinor = savedMeta?.detectedIsMinor ?? entry.inferredIsMinor;
+      const keyLabel = savedMeta?.detectedKey ?? entry.inferredKeyLabel;
 
       return {
-        file,
-        fileKey,
-        originalIndex,
+        file: entry.file,
+        fileKey: entry.fileKey,
+        originalIndex: entry.originalIndex,
         favorite: Boolean(savedMeta?.favorite),
         tags: savedMeta?.tags || [],
         bpm,
         rootPitch,
         isMinor,
         keyLabel,
-        category: detectCategoryTag(file.relativePath, file.name),
-        folderPath: file.relativePath.includes('/')
-          ? file.relativePath.split('/').slice(0, -1).join('/')
-          : 'Root Folder',
+        category: entry.category,
+        folderPath: entry.folderPath,
+        nameLower: entry.nameLower,
+        relPathLower: entry.relPathLower,
       };
     });
 
@@ -207,8 +236,8 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
       const q = searchQuery.toLowerCase();
       items = items.filter(
         (item) =>
-          item.file.name.toLowerCase().includes(q) ||
-          item.file.relativePath.toLowerCase().includes(q) ||
+          item.nameLower.includes(q) ||
+          item.relPathLower.includes(q) ||
           item.tags.some((t) => t.toLowerCase().includes(q)) ||
           (item.keyLabel && item.keyLabel.toLowerCase().includes(q))
       );
@@ -284,7 +313,7 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     return items;
   }, [
     isOpen,
-    scannedFiles,
+    indexedFiles,
     libraryMeta,
     searchQuery,
     selectedFolder,

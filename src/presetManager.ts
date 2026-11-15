@@ -1,5 +1,6 @@
-import { ScaleType, QuantizeGrid, PluginParameters, MidiSequence } from './types';
+import { ScaleType, QuantizeGrid, MidiSequence, MidiNote } from './types';
 import { PRESET_SEQUENCES } from './midiParser';
+import { SCALE_DEFINITIONS, QUANTIZE_GRID_DIVISIONS } from './scaleUtils';
 
 export interface PresetSettings {
   scaleRoot: number;
@@ -739,22 +740,103 @@ export const FACTORY_PRESETS: MidiLensPreset[] = [
 const LOCAL_STORAGE_KEY = 'midilens_user_presets_v1';
 const FAVORITES_STORAGE_KEY = 'midilens_favorite_presets_v1';
 
+const VALID_CATEGORIES = new Set(['Factory', 'User', 'Genre', 'Groove']);
+
+function clampNum(val: unknown, min: number, max: number, fallback: number): number {
+  return typeof val === 'number' && Number.isFinite(val) ? Math.min(max, Math.max(min, val)) : fallback;
+}
+
+function sanitizePresetSettings(raw: unknown): PresetSettings {
+  const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const scaleType =
+    typeof obj.scaleType === 'string' && obj.scaleType in SCALE_DEFINITIONS
+      ? (obj.scaleType as ScaleType)
+      : DEFAULT_PRESET_SETTINGS.scaleType;
+  const quantizeGrid =
+    typeof obj.quantizeGrid === 'string' && obj.quantizeGrid in QUANTIZE_GRID_DIVISIONS
+      ? (obj.quantizeGrid as QuantizeGrid)
+      : DEFAULT_PRESET_SETTINGS.quantizeGrid;
+
+  return {
+    scaleRoot: Math.round(clampNum(obj.scaleRoot, 0, 11, DEFAULT_PRESET_SETTINGS.scaleRoot)),
+    scaleType,
+    scaleLock: typeof obj.scaleLock === 'boolean' ? obj.scaleLock : DEFAULT_PRESET_SETTINGS.scaleLock,
+    quantizeGrid,
+    quantizeStrength: Math.round(clampNum(obj.quantizeStrength, 0, 100, DEFAULT_PRESET_SETTINGS.quantizeStrength)),
+    humanizeVelRange: Math.round(clampNum(obj.humanizeVelRange, 1, 64, DEFAULT_PRESET_SETTINGS.humanizeVelRange)),
+    randomMinVel: Math.round(clampNum(obj.randomMinVel, 1, 127, DEFAULT_PRESET_SETTINGS.randomMinVel)),
+    randomMaxVel: Math.round(clampNum(obj.randomMaxVel, 1, 127, DEFAULT_PRESET_SETTINGS.randomMaxVel)),
+    humanizeTimingAmount: clampNum(obj.humanizeTimingAmount, 0, 0.25, DEFAULT_PRESET_SETTINGS.humanizeTimingAmount),
+    transpose: Math.round(clampNum(obj.transpose, -24, 24, DEFAULT_PRESET_SETTINGS.transpose)),
+    speedMultiplier: clampNum(obj.speedMultiplier, 0.25, 4.0, DEFAULT_PRESET_SETTINGS.speedMultiplier),
+    velocityScale: clampNum(obj.velocityScale, 0.1, 2.0, DEFAULT_PRESET_SETTINGS.velocityScale),
+    velocityOffset: Math.round(clampNum(obj.velocityOffset, -64, 64, DEFAULT_PRESET_SETTINGS.velocityOffset)),
+  };
+}
+
+function sanitizePresetSequence(raw: unknown): MidiSequence | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Record<string, unknown>;
+  if (!Array.isArray(obj.notes)) return undefined;
+
+  const notes: MidiNote[] = [];
+  const limit = Math.min(obj.notes.length, 4096);
+  for (let i = 0; i < limit; i++) {
+    const n = obj.notes[i];
+    if (!n || typeof n !== 'object') continue;
+    const rec = n as Record<string, unknown>;
+    notes.push({
+      id: typeof rec.id === 'number' && Number.isFinite(rec.id) ? rec.id : i + 1,
+      pitch: Math.round(clampNum(rec.pitch, 0, 127, 60)),
+      startPpq: clampNum(rec.startPpq, 0, 4096, 0),
+      durationPpq: clampNum(rec.durationPpq, 0.02, 256, 0.25),
+      velocity: clampNum(rec.velocity, 0.01, 1.0, 0.8),
+      channel: Math.round(clampNum(rec.channel, 1, 16, 1)),
+    });
+  }
+
+  return {
+    name: typeof obj.name === 'string' ? obj.name.slice(0, 120) : 'Imported Groove',
+    bpm: Math.round(clampNum(obj.bpm, 20, 320, 120)),
+    timeSigNumerator: Math.round(clampNum(obj.timeSigNumerator, 1, 16, 4)),
+    timeSigDenominator: Math.round(clampNum(obj.timeSigDenominator, 1, 16, 4)),
+    totalLengthPpq: clampNum(obj.totalLengthPpq, 1, 4096, 16),
+    notes,
+  };
+}
+
 export function loadUserPresets(): MidiLensPreset[] {
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (!raw) return [];
-    return JSON.parse(raw);
-  } catch (err) {
-    console.error('Error reading user presets from localStorage', err);
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object' && typeof item.name === 'string'))
+      .slice(0, 250)
+      .map((item, idx) => ({
+        id: typeof item.id === 'string' ? item.id.slice(0, 80) : `user_saved_${idx}`,
+        name: String(item.name).slice(0, 100),
+        pack: typeof item.pack === 'string' ? item.pack.slice(0, 80) : 'User Presets',
+        category: (typeof item.category === 'string' && VALID_CATEGORIES.has(item.category)
+          ? item.category
+          : 'User') as MidiLensPreset['category'],
+        description: typeof item.description === 'string' ? item.description.slice(0, 240) : '',
+        isFactory: false,
+        createdAt: typeof item.createdAt === 'string' ? item.createdAt.slice(0, 40) : undefined,
+        settings: sanitizePresetSettings(item.settings),
+        sequence: sanitizePresetSequence(item.sequence),
+      }));
+  } catch {
     return [];
   }
 }
 
 export function saveUserPresets(presets: MidiLensPreset[]) {
   try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(presets));
-  } catch (err) {
-    console.error('Error saving user presets to localStorage', err);
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(presets.slice(0, 250)));
+  } catch {
+    // Ignore quota exceeded errors gracefully
   }
 }
 
@@ -763,7 +845,8 @@ export function loadFavoriteIds(): Set<string> {
     const raw = localStorage.getItem(FAVORITES_STORAGE_KEY);
     if (!raw) return new Set();
     const arr = JSON.parse(raw);
-    return new Set(arr);
+    if (!Array.isArray(arr)) return new Set();
+    return new Set(arr.filter((v): v is string => typeof v === 'string').slice(0, 500));
   } catch {
     return new Set();
   }
@@ -771,9 +854,9 @@ export function loadFavoriteIds(): Set<string> {
 
 export function saveFavoriteIds(favorites: Set<string>) {
   try {
-    localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(Array.from(favorites)));
-  } catch (err) {
-    console.error('Error saving favorites to localStorage', err);
+    localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(Array.from(favorites).slice(0, 500)));
+  } catch {
+    // Ignore quota exceeded errors gracefully
   }
 }
 
@@ -801,19 +884,39 @@ export function exportPresetsToJson(presets: MidiLensPreset[]): string {
 }
 
 export function importPresetsFromJson(jsonStr: string): MidiLensPreset[] {
+  if (jsonStr.length > 2 * 1024 * 1024) {
+    throw new Error('Preset file exceeds 2 MB limit');
+  }
   const parsed = JSON.parse(jsonStr);
   if (!Array.isArray(parsed)) throw new Error('Invalid JSON format: expected an array of presets');
 
   const valid: MidiLensPreset[] = [];
-  for (const item of parsed) {
-    if (item.name && item.settings) {
-      valid.push({
-        ...item,
-        pack: item.pack || 'Imported Presets',
-        id: item.isFactory ? item.id : 'user_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-        isFactory: false, // imported are always user category
-      });
+  const limit = Math.min(parsed.length, 200);
+  for (let i = 0; i < limit; i++) {
+    const item = parsed[i];
+    if (!item || typeof item !== 'object') continue;
+    const rec = item as Record<string, unknown>;
+    if (typeof rec.name !== 'string' || !rec.name.trim() || !rec.settings || typeof rec.settings !== 'object') {
+      continue;
     }
+
+    const sanitizedSeq = sanitizePresetSequence(rec.sequence);
+    valid.push({
+      id: 'user_' + Date.now() + '_' + i + '_' + Math.random().toString(36).substring(2, 7),
+      name: rec.name.trim().slice(0, 100),
+      pack: typeof rec.pack === 'string' && rec.pack.trim() ? rec.pack.trim().slice(0, 80) : 'Imported Presets',
+      category: (typeof rec.category === 'string' && VALID_CATEGORIES.has(rec.category) && rec.category !== 'Factory'
+        ? rec.category
+        : 'User') as MidiLensPreset['category'],
+      description:
+        typeof rec.description === 'string' && rec.description.trim()
+          ? rec.description.trim().slice(0, 240)
+          : 'Imported preset.',
+      isFactory: false,
+      createdAt: new Date().toISOString(),
+      settings: sanitizePresetSettings(rec.settings),
+      ...(sanitizedSeq ? { sequence: sanitizedSeq } : {}),
+    });
   }
   return valid;
 }

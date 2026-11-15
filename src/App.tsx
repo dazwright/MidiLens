@@ -18,9 +18,11 @@ import {
 export default function App() {
   const [activeTab, setActiveTab] = useState<'simulator' | 'code' | 'guide'>('simulator');
   const [isZipping, setIsZipping] = useState(false);
+  const [zipError, setZipError] = useState<string | null>(null);
 
   const handleDownloadZip = async () => {
     setIsZipping(true);
+    setZipError(null);
     try {
       const zip = new JSZip();
       const folder = zip.folder('MidiLens_JUCE_Project');
@@ -42,7 +44,7 @@ export default function App() {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (err) {
-      alert('Error creating zip: ' + (err as Error).message);
+      setZipError('Could not package project ZIP: ' + (err as Error).message);
     } finally {
       setIsZipping(false);
     }
@@ -77,6 +79,11 @@ export default function App() {
 
           {/* Quick Download Action */}
           <div className="flex items-center gap-3">
+            {zipError && (
+              <span className="text-[11px] font-mono text-rose-400 bg-rose-500/10 border border-rose-500/30 px-2.5 py-1 rounded-lg">
+                {zipError}
+              </span>
+            )}
             <button
               onClick={handleDownloadZip}
               disabled={isZipping}

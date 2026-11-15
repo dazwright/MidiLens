@@ -52,6 +52,23 @@ interface PianoRollProps {
   onSnapshotBeforeChange?: (description: string) => void;
 }
 
+function getMaxNoteId(notes: MidiNote[]): number {
+  let max = 0;
+  for (let i = 0; i < notes.length; i++) {
+    if (notes[i].id > max) max = notes[i].id;
+  }
+  return max;
+}
+
+function getMinStartPpq(notes: MidiNote[]): number {
+  if (notes.length === 0) return 0;
+  let min = notes[0].startPpq;
+  for (let i = 1; i < notes.length; i++) {
+    if (notes[i].startPpq < min) min = notes[i].startPpq;
+  }
+  return min;
+}
+
 export const PianoRoll: React.FC<PianoRollProps> = ({
   notes,
   totalLengthPpq,
@@ -75,6 +92,10 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
   const [showChordNames, setShowChordNames] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const staticCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasSizeRef = useRef({ width: 0, height: 0, dpr: 0 });
+  const [staticRenderTick, setStaticRenderTick] = useState(0);
+  const [marqueeTick, setMarqueeTick] = useState(0);
 
   const [internalSelectedNoteIds, setInternalSelectedNoteIds] = useState<Set<number>>(new Set());
   const selectedNoteIds = propSelectedNoteIds !== undefined ? propSelectedNoteIds : internalSelectedNoteIds;
@@ -227,7 +248,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
 
     if (targetIds.size > 0) {
       const selectedNotes = notes.filter((n) => targetIds.has(n.id));
-      const minPpq = Math.min(...selectedNotes.map((n) => n.startPpq));
+      const minPpq = getMinStartPpq(selectedNotes);
       clipboardRef.current = selectedNotes.map((n) => ({
         pitch: n.pitch,
         offsetPpq: n.startPpq - minPpq,
@@ -251,7 +272,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     if (targetIds.size > 0) {
       if (onSnapshotBeforeChange) onSnapshotBeforeChange('Cut Notes');
       const selectedNotes = notes.filter((n) => targetIds.has(n.id));
-      const minPpq = Math.min(...selectedNotes.map((n) => n.startPpq));
+      const minPpq = getMinStartPpq(selectedNotes);
       clipboardRef.current = selectedNotes.map((n) => ({
         pitch: n.pitch,
         offsetPpq: n.startPpq - minPpq,
@@ -273,7 +294,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       if (clipboardRef.current.length > 0) {
         if (onSnapshotBeforeChange) onSnapshotBeforeChange('Paste Notes');
         const pasteStartPpq = overridePpq !== undefined ? overridePpq : contextMenu ? contextMenu.targetPpq : playheadPpq;
-        let maxId = Math.max(0, ...notes.map((n) => n.id));
+        let maxId = getMaxNoteId(notes);
         const newNotes: MidiNote[] = [];
         const newSelectedIds = new Set<number>();
 
@@ -308,17 +329,25 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     [contextMenu, playheadPpq, notes, scaleLock, scaleType, scaleRoot, onNotesChange, updateSelectedNoteIds, onSnapshotBeforeChange]
   );
 
-  // Main Canvas Render with Scaler 3 / Riffer Modern Matte Aesthetic
+  // Static Layer Render (background, pitch lanes, keybed, grid, loop bounds, ruler, chords, notes)
+  // Cached on an offscreen canvas so playhead movement does not re-render thousands of notes or allocate backing textures every frame
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
+    if (!staticCanvasRef.current && typeof document !== 'undefined') {
+      staticCanvasRef.current = document.createElement('canvas');
+    }
+    const staticCanvas = staticCanvasRef.current;
+    if (!staticCanvas) return;
+    const ctx = staticCanvas.getContext('2d');
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = dimensions.width * dpr;
-    canvas.height = dimensions.height * dpr;
-    ctx.scale(dpr, dpr);
+    const targetW = Math.max(1, Math.round(dimensions.width * dpr));
+    const targetH = Math.max(1, Math.round(dimensions.height * dpr));
+    if (staticCanvas.width !== targetW || staticCanvas.height !== targetH) {
+      staticCanvas.width = targetW;
+      staticCanvas.height = targetH;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     const { width, height } = dimensions;
 
@@ -334,16 +363,13 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       const inScale = scaleType === 'chromatic' ? true : isPitchInScale(p, scaleRoot, scaleType);
 
       if (scaleType !== 'chromatic' && !inScale) {
-        // Out-of-scale pitch lane: Deep obsidian black (subtle distinction between white & black key rows)
         ctx.fillStyle = isBlack ? '#030504' : '#050907';
         ctx.fillRect(pianoKeysWidth, y, width - pianoKeysWidth, noteHeight);
       } else {
-        // In-scale pitch lane: Subtle night-green cathode ray glow with black/white key lane contrast
         ctx.fillStyle = isBlack ? '#060d09' : '#0d1912';
         ctx.fillRect(pianoKeysWidth, y, width - pianoKeysWidth, noteHeight);
       }
 
-      // Pitch dividers
       const isC = semitone === 0;
       ctx.strokeStyle = isC ? 'rgba(16, 185, 129, 0.35)' : inScale ? 'rgba(16, 185, 129, 0.12)' : 'rgba(0, 0, 0, 0.6)';
       ctx.lineWidth = isC ? 1.5 : 0.8;
@@ -367,11 +393,9 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       const inScale = scaleType === 'chromatic' ? true : isPitchInScale(p, scaleRoot, scaleType);
 
       if (isBlack) {
-        // White continuation strip on the right behind the black key (like a real piano keybed)
         ctx.fillStyle = inScale ? '#f1f5f9' : '#dce1e8';
         ctx.fillRect(blackKeyWidth, y, pianoKeysWidth - blackKeyWidth, noteHeight);
 
-        // Split line across the right white strip where adjacent white keys meet
         ctx.strokeStyle = '#94a3b8';
         ctx.lineWidth = 0.8;
         ctx.beginPath();
@@ -379,11 +403,9 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         ctx.lineTo(pianoKeysWidth, y + noteHeight / 2);
         ctx.stroke();
 
-        // Jet-black raised piano key on the left 64%
         ctx.fillStyle = inScale ? '#090b0f' : '#1b1f26';
         ctx.fillRect(0, y + 0.5, blackKeyWidth, Math.max(2, noteHeight - 1));
 
-        // Top bevel highlight & crisp dark outline for raised 3D black-key look
         ctx.fillStyle = inScale ? '#2a303c' : '#333a47';
         ctx.fillRect(1, y + 1, Math.max(1, blackKeyWidth - 2), 1.5);
         ctx.strokeStyle = '#000000';
@@ -398,15 +420,12 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
           ctx.fillText(sharpNames[semitone], 4, y + noteHeight / 2);
         }
       } else {
-        // Pure crisp white piano key
         ctx.fillStyle = inScale ? '#ffffff' : '#dde2e9';
         ctx.fillRect(0, y, pianoKeysWidth, noteHeight);
 
-        // Subtle right-edge bevel shading
         ctx.fillStyle = 'rgba(15, 23, 42, 0.08)';
         ctx.fillRect(pianoKeysWidth - 3, y, 3, noteHeight);
 
-        // Crisp key separator lines (darker at C/B boundary)
         ctx.strokeStyle = semitone === 0 ? '#475569' : '#94a3b8';
         ctx.lineWidth = semitone === 0 ? 1.2 : 0.8;
         ctx.beginPath();
@@ -430,7 +449,6 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         }
       }
 
-      // Scale indicator dot neatly along right edge of keybed
       if (scaleType !== 'chromatic') {
         ctx.fillStyle = inScale ? '#10b981' : 'rgba(100, 116, 139, 0.25)';
         ctx.beginPath();
@@ -488,7 +506,6 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Gray out area beyond sequence total length
     if (lengthX < width) {
       ctx.fillStyle = 'rgba(10, 12, 18, 0.55)';
       ctx.fillRect(lengthX, rulerHeight, width - lengthX, height - rulerHeight);
@@ -529,7 +546,6 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     ctx.lineTo(width, rulerHeight);
     ctx.stroke();
 
-    // Top A/B Loop Span Track (y = 0..8)
     ctx.fillStyle = isCustomLoopActive ? 'rgba(56, 189, 248, 0.28)' : 'rgba(16, 185, 129, 0.12)';
     ctx.fillRect(loopAX, 0, Math.max(4, loopBX - loopAX), 6);
     ctx.fillStyle = isCustomLoopActive ? '#38bdf8' : 'rgba(52, 211, 153, 0.45)';
@@ -610,7 +626,6 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     }
 
     // Draggable A & B Loop Locator Flags on Ruler
-    // A Flag (Start Loop)
     ctx.fillStyle = isCustomLoopActive ? '#38bdf8' : '#0284c7';
     ctx.beginPath();
     ctx.moveTo(loopAX, 0);
@@ -626,7 +641,6 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     ctx.textBaseline = 'middle';
     ctx.fillText('A', loopAX + 6.5, 6.5);
 
-    // B Flag (End Loop)
     ctx.fillStyle = isCustomLoopActive ? '#38bdf8' : '#0284c7';
     ctx.beginPath();
     ctx.moveTo(loopBX - 13, 0);
@@ -639,7 +653,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     ctx.fillStyle = '#04121d';
     ctx.fillText('B', loopBX - 6.5, 6.5);
 
-    // Draggable Length Handle on Ruler (Vintage Amber Tag)
+    // Draggable Length Handle on Ruler
     ctx.fillStyle = '#d97706';
     ctx.beginPath();
     ctx.roundRect(lengthX - 11, 16, 22, 20, 3);
@@ -649,13 +663,17 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     ctx.textAlign = 'center';
     ctx.fillText('END', lengthX, 26);
 
-    // Draw Notes with Velocity Heatmap Colors (Green -> Yellow/Amber -> Vivid Red) & Crisp Selection/Lock Framing
+    // Draw Notes with Horizontal Viewport Culling & Conditional Glow Throttling
     const monoFontFamily = '"SF Mono", "JetBrains Mono", Menlo, Monaco, ui-monospace, monospace';
+    const enableNoteGlow = notes.length <= 150;
+
     for (const note of notes) {
-      const effectivePitch = Math.min(127, Math.max(0, note.pitch + previewTranspose));
-      const inScale = scaleType === 'chromatic' ? true : isPitchInScale(effectivePitch, scaleRoot, scaleType);
       const x = ppqToX(note.startPpq);
       const w = Math.max(6, note.durationPpq * pixelsPerPpq);
+      if (x + w < pianoKeysWidth || x > width) continue;
+
+      const effectivePitch = Math.min(127, Math.max(0, note.pitch + previewTranspose));
+      const inScale = scaleType === 'chromatic' ? true : isPitchInScale(effectivePitch, scaleRoot, scaleType);
       const y = pitchToY(effectivePitch);
       const boxH = Math.max(3, noteHeight - 1.5);
       const boxY = y + 0.75;
@@ -663,16 +681,18 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       const isLocked = Boolean(note.locked);
       const velColor = getVelocityColor(note.velocity);
 
-      ctx.save();
-      if (isSelected) {
-        ctx.shadowColor = isLocked ? 'rgba(56, 189, 248, 0.85)' : 'rgba(255, 255, 255, 0.75)';
-        ctx.shadowBlur = 8;
-      } else if (isLocked) {
-        ctx.shadowColor = 'rgba(14, 165, 233, 0.65)';
-        ctx.shadowBlur = 6;
-      } else if (inScale) {
-        ctx.shadowColor = velColor.base;
-        ctx.shadowBlur = 4;
+      if (enableNoteGlow || isSelected) {
+        ctx.save();
+        if (isSelected) {
+          ctx.shadowColor = isLocked ? 'rgba(56, 189, 248, 0.85)' : 'rgba(255, 255, 255, 0.75)';
+          ctx.shadowBlur = 8;
+        } else if (isLocked) {
+          ctx.shadowColor = 'rgba(14, 165, 233, 0.65)';
+          ctx.shadowBlur = 6;
+        } else if (inScale) {
+          ctx.shadowColor = velColor.base;
+          ctx.shadowBlur = 4;
+        }
       }
 
       if (inScale) {
@@ -681,7 +701,6 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         ctx.roundRect(x, boxY, w, boxH, 1.5);
         ctx.fill();
       } else {
-        // Out-of-scale: dark slate base with subtle velocity tint so velocity edits still show while staying clearly muted
         ctx.fillStyle = '#1e293b';
         ctx.beginPath();
         ctx.roundRect(x, boxY, w, boxH, 1.5);
@@ -693,9 +712,11 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         ctx.fill();
         ctx.globalAlpha = 1;
       }
-      ctx.restore();
 
-      // Top highlight sheen
+      if (enableNoteGlow || isSelected) {
+        ctx.restore();
+      }
+
       ctx.fillStyle = isSelected
         ? 'rgba(255, 255, 255, 0.65)'
         : isLocked
@@ -705,7 +726,6 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
             : 'rgba(148, 163, 184, 0.3)';
       ctx.fillRect(x + 1, boxY + 0.5, Math.max(1, w - 2), 1.0);
 
-      // Selection / Lock / Velocity Border
       if (isSelected) {
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 1.8;
@@ -725,13 +745,11 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         ctx.strokeRect(x, boxY, w, boxH);
       }
 
-      // Left selection indicator accent bar
       if (isSelected && w >= 10) {
         ctx.fillStyle = isLocked ? '#38bdf8' : '#ffffff';
         ctx.fillRect(x + 1, boxY + 1, 2, Math.max(1, boxH - 2));
       }
 
-      // Distinct Right-Edge Trim / Resize Handle (Tactile Hardware Grip)
       if (w >= 12) {
         const handleW = Math.min(5, Math.max(2.5, w * 0.14));
         ctx.fillStyle = isSelected ? 'rgba(0, 0, 0, 0.35)' : 'rgba(0, 0, 0, 0.22)';
@@ -740,7 +758,6 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         ctx.fillRect(x + w - 2.5, boxY + 2, 1, Math.max(1, boxH - 4));
       }
 
-      // Miniature padlock icon for locked notes
       const showPadlock = isLocked && w >= 12 && noteHeight >= 7;
       if (showPadlock) {
         const lockX = isSelected ? x + 4.5 : x + 3;
@@ -757,7 +774,6 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         ctx.restore();
       }
 
-      // Out of scale warning diagonal slash
       if (!inScale) {
         ctx.strokeStyle = 'rgba(248, 113, 113, 0.85)';
         ctx.lineWidth = 1.2;
@@ -767,7 +783,6 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         ctx.stroke();
       }
 
-      // Note Pitch Value Label rendered directly on the note block (works across web & compact AU plugin heights)
       if (w >= 8 && noteHeight >= 4.5) {
         const pc = ((effectivePitch % 12) + 12) % 12;
         const octave = Math.floor(effectivePitch / 12) - 1;
@@ -779,7 +794,6 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         if (!showPadlock || w >= 20) {
           const fontSize = noteHeight < 8 ? Math.max(6.5, noteHeight - 0.5) : Math.min(10, Math.max(7, Math.floor(noteHeight - 2.5)));
           ctx.save();
-          // Clip horizontally so text never overflows narrow notes, with small vertical headroom for small rows
           ctx.beginPath();
           ctx.rect(x + 1, y - 2, Math.max(0, w - 2.5), noteHeight + 4);
           ctx.clip();
@@ -802,10 +816,63 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       }
     }
 
+    setStaticRenderTick((t) => t + 1);
+  }, [
+    dimensions,
+    minPitch,
+    maxPitch,
+    totalLengthPpq,
+    previewTranspose,
+    notes,
+    selectedNoteIds,
+    noteHeight,
+    pixelsPerPpq,
+    pianoKeysWidth,
+    rulerHeight,
+    scaleRoot,
+    scaleType,
+    scaleLock,
+    effectiveLoopStart,
+    effectiveLoopEnd,
+    isCustomLoopActive,
+    showChordNames,
+    detectedChords,
+    timeSigNumerator,
+    timeSigDenominator,
+    pitchToY,
+    ppqToX,
+  ]);
+
+  // Dynamic Composite Pass: blits cached static layer + draws Playhead & Marquee box without reallocating backing buffers
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const staticCanvas = staticCanvasRef.current;
+    if (!canvas || !staticCanvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const { width, height } = dimensions;
+    const targetW = Math.max(1, Math.round(width * dpr));
+    const targetH = Math.max(1, Math.round(height * dpr));
+
+    if (
+      canvasSizeRef.current.width !== targetW ||
+      canvasSizeRef.current.height !== targetH ||
+      canvasSizeRef.current.dpr !== dpr
+    ) {
+      canvas.width = targetW;
+      canvas.height = targetH;
+      canvasSizeRef.current = { width: targetW, height: targetH, dpr };
+    }
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(staticCanvas, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
     // Draw Playhead (Glowing Phosphor line with analog bloom)
     const playheadX = ppqToX(playheadPpq);
     if (playheadX >= pianoKeysWidth && playheadX <= width) {
-      // Analog bloom halo
       ctx.fillStyle = 'rgba(16, 185, 129, 0.22)';
       ctx.fillRect(playheadX - 3, rulerHeight, 7, height - rulerHeight);
 
@@ -843,32 +910,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       ctx.lineWidth = 1;
       ctx.strokeRect(mx, my, mw, mh);
     }
-  }, [
-    dimensions,
-    minPitch,
-    maxPitch,
-    totalLengthPpq,
-    playheadPpq,
-    previewTranspose,
-    notes,
-    selectedNoteIds,
-    noteHeight,
-    pixelsPerPpq,
-    pianoKeysWidth,
-    rulerHeight,
-    scaleRoot,
-    scaleType,
-    scaleLock,
-    effectiveLoopStart,
-    effectiveLoopEnd,
-    isCustomLoopActive,
-    showChordNames,
-    detectedChords,
-    timeSigNumerator,
-    timeSigDenominator,
-    pitchToY,
-    ppqToX,
-  ]);
+  }, [dimensions, playheadPpq, pianoKeysWidth, rulerHeight, ppqToX, staticRenderTick, marqueeTick]);
 
   // Mouse Handlers
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -994,7 +1036,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
       if (isAlt) {
         if (onSnapshotBeforeChange) onSnapshotBeforeChange('Duplicate & Drag Note(s)');
         // Alt-drag note duplication: duplicate all selected notes immediately
-        let maxId = Math.max(0, ...notes.map((n) => n.id));
+        let maxId = getMaxNoteId(notes);
         const duplicatedNotes: MidiNote[] = [];
         const duplicatedSelectedIds = new Set<number>();
         const noteIdMap = new Map<number, number>();
@@ -1217,13 +1259,18 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         }
       }
       updateSelectedNoteIds(marqueeSelected);
+      setMarqueeTick((t) => t + 1);
     }
   };
 
   const handleMouseUp = () => {
+    const wasMarquee = dragRef.current.mode === 'marquee';
     dragRef.current.mode = 'none';
     dragRef.current.marquee = undefined;
     dragRef.current.initialDurations = undefined;
+    if (wasMarquee) {
+      setMarqueeTick((t) => t + 1);
+    }
     if (canvasRef.current) {
       canvasRef.current.style.cursor = 'crosshair';
     }
@@ -1283,7 +1330,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
   const handleAddNote = useCallback(() => {
     if (!contextMenu) return;
     if (onSnapshotBeforeChange) onSnapshotBeforeChange('Add Note');
-    const maxId = Math.max(0, ...notes.map((n) => n.id));
+    const maxId = getMaxNoteId(notes);
     let pitch = contextMenu.targetPitch;
     if (scaleLock && scaleType !== 'chromatic') {
       pitch = snapPitchToScale(pitch, scaleRoot, scaleType);
@@ -1353,7 +1400,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
 
     if (toDup.size > 0) {
       if (onSnapshotBeforeChange) onSnapshotBeforeChange('Duplicate Note(s)');
-      let maxId = Math.max(0, ...notes.map((n) => n.id));
+      let maxId = getMaxNoteId(notes);
       const duplicated: MidiNote[] = [];
       const newSelected = new Set<number>();
 
@@ -1552,7 +1599,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
     if (onSnapshotBeforeChange) onSnapshotBeforeChange('Double Length (2x)');
     const oldLength = totalLengthPpq;
     const newLength = oldLength * 2;
-    const maxId = Math.max(0, ...notes.map((n) => n.id));
+    const maxId = getMaxNoteId(notes);
     const duplicatedNotes = notes.map((n, i) => ({
       ...n,
       id: maxId + i + 1,

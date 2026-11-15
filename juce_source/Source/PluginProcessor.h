@@ -96,6 +96,8 @@ public:
     std::vector<juce::String> getScannedFolders() const;
     void appendScannedFiles(const std::vector<ScannedFileMetadata>& files);
     std::vector<ScannedFileMetadata> getScannedFiles() const;
+    std::vector<ScannedFileMetadata> getScannedFilesSlice(size_t offset, size_t count, size_t& outTotal) const;
+    size_t getScannedFilesCount() const;
     void clearGlobalLibrary();
     void retainFileChooser(std::shared_ptr<juce::FileChooser> chooser);
 
@@ -157,9 +159,11 @@ private:
     std::atomic<bool> newSequenceAvailable { false };
     std::atomic<bool> resetPlayheadOnSwap { false };
     std::shared_ptr<const SequenceSnapshot> pendingSequence { nullptr };
+    std::shared_ptr<const SequenceSnapshot> retiredSequence { nullptr };
     mutable std::mutex sequenceExchangeMutex;
 
     // Persistent WebUI JSON across editor close/reopen and DAW project saves
+    static constexpr int maxUiStateJsonBytes = 2 * 1024 * 1024;
     mutable std::mutex uiStateMutex;
     juce::String savedUiStateJson;
     std::vector<std::shared_ptr<juce::FileChooser>> retainedFileChoosers;

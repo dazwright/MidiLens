@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   MidiLensPreset,
   PresetSettings,
@@ -63,10 +63,15 @@ export const PresetDrawer: React.FC<PresetDrawerProps> = ({
   const [saveDescription, setSaveDescription] = useState('');
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setUserPresets(loadUserPresets());
     setFavoriteIds(loadFavoriteIds());
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
   }, []);
 
   if (!isOpen) return null;
@@ -84,20 +89,23 @@ export const PresetDrawer: React.FC<PresetDrawerProps> = ({
 
   const handleDeleteUserPreset = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (confirm('Are you sure you want to delete this custom preset?')) {
-      const updated = userPresets.filter((p) => p.id !== id);
-      setUserPresets(updated);
-      saveUserPresets(updated);
-
-      if (favoriteIds.has(id)) {
-        const favs = new Set(favoriteIds);
-        favs.delete(id);
-        setFavoriteIds(favs);
-        saveFavoriteIds(favs);
-      }
-
-      showToast('Preset deleted.');
+    if (confirmDeleteId !== id) {
+      setConfirmDeleteId(id);
+      return;
     }
+    setConfirmDeleteId(null);
+    const updated = userPresets.filter((p) => p.id !== id);
+    setUserPresets(updated);
+    saveUserPresets(updated);
+
+    if (favoriteIds.has(id)) {
+      const favs = new Set(favoriteIds);
+      favs.delete(id);
+      setFavoriteIds(favs);
+      saveFavoriteIds(favs);
+    }
+
+    showToast('Preset deleted.');
   };
 
   const handleSaveSubmit = (e: React.FormEvent) => {
@@ -132,6 +140,7 @@ export const PresetDrawer: React.FC<PresetDrawerProps> = ({
 
   const handleImportJson = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
 
     const reader = new FileReader();
@@ -144,17 +153,23 @@ export const PresetDrawer: React.FC<PresetDrawerProps> = ({
           setUserPresets(updated);
           saveUserPresets(updated);
           showToast(`Successfully imported ${imported.length} preset(s)!`);
+        } else {
+          showToast('No valid presets found in JSON file.');
         }
       } catch (err) {
-        alert('Could not parse preset file: ' + (err as Error).message);
+        showToast('Could not parse preset file: ' + (err as Error).message);
       }
     };
     reader.readAsText(file);
   };
 
   const showToast = (msg: string) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 2500);
+    toastTimerRef.current = setTimeout(() => {
+      setToastMessage(null);
+      toastTimerRef.current = null;
+    }, 2500);
   };
 
   const filteredPresets = allPresets.filter((p) => {
@@ -378,10 +393,14 @@ export const PresetDrawer: React.FC<PresetDrawerProps> = ({
                       {!preset.isFactory && (
                         <button
                           onClick={(e) => handleDeleteUserPreset(preset.id, e)}
-                          className="p-1.5 text-slate-600 hover:text-rose-400 rounded-lg transition"
-                          title="Delete custom preset"
+                          className={`p-1.5 rounded-lg transition text-[10px] font-mono font-bold ${
+                            confirmDeleteId === preset.id
+                              ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2'
+                              : 'text-slate-600 hover:text-rose-400'
+                          }`}
+                          title={confirmDeleteId === preset.id ? 'Click again to confirm delete' : 'Delete custom preset'}
                         >
-                          <Trash2 className="w-4 h-4" />
+                          {confirmDeleteId === preset.id ? 'Confirm?' : <Trash2 className="w-4 h-4" />}
                         </button>
                       )}
                     </div>

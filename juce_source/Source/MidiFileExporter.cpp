@@ -9,6 +9,13 @@ juce::File MidiFileExporter::writeToTempFile(const SequenceSnapshot& snapshot, c
                              .getChildFile("MIDI_Previewer_Exports");
     tempDir.createDirectory();
 
+    const juce::Time cutoff = juce::Time::getCurrentTime() - juce::RelativeTime::hours(24);
+    for (const auto& existing : tempDir.findChildFiles(juce::File::findFiles, false, "*.mid"))
+    {
+        if (existing.getLastModificationTime() < cutoff)
+            existing.deleteFile();
+    }
+
     juce::String cleanName = snapshot.sequenceName.isEmpty() ? "MidiPreview" : snapshot.sequenceName;
     cleanName = cleanName.replaceCharacters("/\\?%*:|\"<>", "_________");
 

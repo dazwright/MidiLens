@@ -43,13 +43,15 @@ class AudioSynthesizerEngine {
   private onStateChangeCallback: ((playing: boolean) => void) | null = null;
   private onActivePitchesCallback: ((pitches: number[]) => void) | null = null;
 
-  // Active sounding pitches
-  private soundingPitchesMap: Map<string, number> = new Map();
+  // Active sounding pitches reference counts (pitch -> count)
+  private activePitchCounts: Map<number, number> = new Map();
+  private static readonly MAX_POLYPHONY = 32;
 
   // Active oscillator voices to stop cleanly
   private activeVoices: Array<{
     noteId: number;
     pitch: number;
+    timerId: ReturnType<typeof setTimeout> | null;
     stop: () => void;
   }> = [];
 
@@ -96,7 +98,7 @@ class AudioSynthesizerEngine {
   }
 
   public setSequence(notes: MidiNote[], totalPpq: number, bpm: number) {
-    this.currentNotes = [...notes];
+    this.currentNotes = notes;
     this.sequenceLengthPpq = Math.max(1, totalPpq);
     this.tempoBpm = Math.min(320, Math.max(20, bpm));
     this.isEffectiveDirty = true;
@@ -143,7 +145,7 @@ class AudioSynthesizerEngine {
         gate: this.params.arpGate,
       });
     } else {
-      this.effectiveNotes = [...this.currentNotes];
+      this.effectiveNotes = this.currentNotes;
     }
     this.isEffectiveDirty = false;
     return this.effectiveNotes;
@@ -313,8 +315,27 @@ class AudioSynthesizerEngine {
     }
   }
 
+  private decrementPitchCount(pitch: number) {
+    const count = this.activePitchCounts.get(pitch) ?? 0;
+    if (count <= 1) {
+      this.activePitchCounts.delete(pitch);
+    } else {
+      this.activePitchCounts.set(pitch, count - 1);
+    }
+  }
+
   private playSynthesizerVoice(note: MidiNote) {
     if (!this.ctx || !this.filterNode) return;
+
+    // Voice stealing to bound polyphony & WebAudio node count
+    while (this.activeVoices.length >= AudioSynthesizerEngine.MAX_POLYPHONY) {
+      const oldest = this.activeVoices.shift();
+      if (oldest) {
+        if (oldest.timerId !== null) clearTimeout(oldest.timerId);
+        oldest.stop();
+        this.decrementPitchCount(oldest.pitch);
+      }
+    }
 
     const transposedPitch = Math.min(127, Math.max(0, note.pitch + this.params.transpose));
     const rawVel = note.velocity;
@@ -325,7 +346,7 @@ class AudioSynthesizerEngine {
 
     const now = this.ctx.currentTime;
     const effectiveBpm = this.tempoBpm * Math.max(0.1, this.params.speedMultiplier);
-    const durationSeconds = (note.durationPpq * 60) / effectiveBpm;
+    const durationSeconds = Math.min(12, Math.max(0.05, (note.durationPpq * 60) / effectiveBpm));
 
     // Oscillator 1: Warm saw
     const osc1 = this.ctx.createOscillator();
@@ -347,7 +368,7 @@ class AudioSynthesizerEngine {
     voiceGain.gain.exponentialRampToValueAtTime(finalVel * 0.6, now + attack);
     voiceGain.gain.exponentialRampToValueAtTime(sustainLevel, now + attack + 0.08);
 
-    const stopTime = now + Math.max(0.05, durationSeconds);
+    const stopTime = now + durationSeconds;
     voiceGain.gain.setValueAtTime(sustainLevel, stopTime);
     voiceGain.gain.exponentialRampToValueAtTime(0.0001, stopTime + release);
 
@@ -355,53 +376,82 @@ class AudioSynthesizerEngine {
     osc2.connect(voiceGain);
     voiceGain.connect(this.filterNode);
 
+    let cleanedUp = false;
+    const disconnectNodes = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      try {
+        osc1.disconnect();
+        osc2.disconnect();
+        voiceGain.disconnect();
+      } catch {
+        // ignore disconnect race
+      }
+    };
+
+    osc1.onended = disconnectNodes;
+
     osc1.start(now);
     osc2.start(now);
     osc1.stop(stopTime + release + 0.05);
     osc2.stop(stopTime + release + 0.05);
 
-    const voiceIdKey = `${note.id}-${now}-${Math.random()}`;
-    this.soundingPitchesMap.set(voiceIdKey, transposedPitch);
+    this.activePitchCounts.set(transposedPitch, (this.activePitchCounts.get(transposedPitch) ?? 0) + 1);
     this.notifyActivePitches();
 
-    const voiceEntry = {
+    const voiceEntry: {
+      noteId: number;
+      pitch: number;
+      timerId: ReturnType<typeof setTimeout> | null;
+      stop: () => void;
+    } = {
       noteId: note.id,
       pitch: transposedPitch,
+      timerId: null,
       stop: () => {
         try {
-          voiceGain.gain.cancelScheduledValues(this.ctx!.currentTime);
-          voiceGain.gain.setValueAtTime(voiceGain.gain.value, this.ctx!.currentTime);
-          voiceGain.gain.linearRampToValueAtTime(0.0001, this.ctx!.currentTime + 0.01);
-          osc1.stop(this.ctx!.currentTime + 0.02);
-          osc2.stop(this.ctx!.currentTime + 0.02);
+          const ctxTime = this.ctx ? this.ctx.currentTime : now;
+          voiceGain.gain.cancelScheduledValues(ctxTime);
+          voiceGain.gain.setValueAtTime(Math.max(0.0001, voiceGain.gain.value), ctxTime);
+          voiceGain.gain.linearRampToValueAtTime(0.0001, ctxTime + 0.01);
+          osc1.stop(ctxTime + 0.02);
+          osc2.stop(ctxTime + 0.02);
         } catch {
-          // ignore already stopped
+          disconnectNodes();
         }
       },
     };
 
     this.activeVoices.push(voiceEntry);
 
-    setTimeout(() => {
-      this.activeVoices = this.activeVoices.filter((v) => v !== voiceEntry);
-      this.soundingPitchesMap.delete(voiceIdKey);
-      this.notifyActivePitches();
-    }, (durationSeconds + release + 0.05) * 1000);
+    voiceEntry.timerId = setTimeout(() => {
+      voiceEntry.timerId = null;
+      const idx = this.activeVoices.indexOf(voiceEntry);
+      if (idx !== -1) {
+        this.activeVoices.splice(idx, 1);
+        this.decrementPitchCount(transposedPitch);
+        this.notifyActivePitches();
+      }
+      disconnectNodes();
+    }, (durationSeconds + release + 0.06) * 1000);
   }
 
   private notifyActivePitches() {
     if (this.onActivePitchesCallback) {
-      const uniquePitches = Array.from(new Set(this.soundingPitchesMap.values()));
-      this.onActivePitchesCallback(uniquePitches);
+      this.onActivePitchesCallback(Array.from(this.activePitchCounts.keys()));
     }
   }
 
   private killAllVoices() {
     for (const v of this.activeVoices) {
+      if (v.timerId !== null) {
+        clearTimeout(v.timerId);
+        v.timerId = null;
+      }
       v.stop();
     }
     this.activeVoices = [];
-    this.soundingPitchesMap.clear();
+    this.activePitchCounts.clear();
     this.notifyActivePitches();
   }
 }

@@ -27,8 +27,35 @@ namespace
         return v;
     }
 
+    juce::String maskHomeDirectoryPath(const juce::File& file)
+    {
+        const juce::File homeDir = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
+        if (homeDir.exists() && file.isAChildOf(homeDir))
+            return "~/" + file.getRelativePathFrom(homeDir).replaceCharacter('\\', '/');
+        return file.getFileName();
+    }
+
+    void pruneTempExportsDirectory(const juce::File& tempDir)
+    {
+        if (!tempDir.isDirectory())
+            return;
+        const juce::Time cutoff = juce::Time::getCurrentTime() - juce::RelativeTime::hours(24);
+        for (const auto& existing : tempDir.findChildFiles(juce::File::findFiles, false, "*.mid"))
+        {
+            if (existing.getLastModificationTime() < cutoff)
+                existing.deleteFile();
+        }
+    }
+
     juce::String loadFileToBase64(const juce::File& file, int cloudTimeoutMs, juce::String& outError)
     {
+        constexpr juce::int64 maxMidiBytes = 16 * 1024 * 1024;
+        if (file.existsAsFile() && file.getSize() > maxMidiBytes)
+        {
+            outError = "MIDI file exceeds the 16 MB safety limit.";
+            return {};
+        }
+
        #if defined(__APPLE__)
         auto res = readFileWithCloudHydration(file, cloudTimeoutMs);
         if (res.success && !res.bytes.empty())
@@ -426,26 +453,17 @@ void MidiPreviewerAudioProcessorEditor::streamLibraryToWebView(bool fromRescan)
     auto cancelFlag = std::make_shared<std::atomic<bool>>(false);
     libraryStreamCancelFlag = cancelFlag;
 
-    struct StreamPayload
-    {
-        std::vector<juce::String> folders;
-        std::vector<ScannedFileMetadata> files;
-        bool fromRescan { false };
-    };
+    auto folders = std::make_shared<std::vector<juce::String>>(audioProcessor.getScannedFolders());
+    const size_t initialCount = audioProcessor.getScannedFilesCount();
 
-    auto payloadData = std::make_shared<StreamPayload>();
-    payloadData->folders = audioProcessor.getScannedFolders();
-    payloadData->files = audioProcessor.getScannedFiles();
-    payloadData->fromRescan = fromRescan;
-
-    if (payloadData->files.empty() && payloadData->folders.empty() && !fromRescan)
+    if (initialCount == 0 && folders->empty() && !fromRescan)
         return;
 
     auto safeThis = juce::Component::SafePointer<MidiPreviewerAudioProcessorEditor>(this);
     constexpr size_t chunkSize = 800;
 
     auto sendNextChunk = std::make_shared<std::function<void(size_t)>>();
-    *sendNextChunk = [safeThis, cancelFlag, payloadData, sendNextChunk, chunkSize](size_t offset)
+    *sendNextChunk = [safeThis, cancelFlag, folders, fromRescan, sendNextChunk, chunkSize](size_t offset)
     {
         if (cancelFlag->load(std::memory_order_relaxed)
             || safeThis == nullptr
@@ -455,32 +473,32 @@ void MidiPreviewerAudioProcessorEditor::streamLibraryToWebView(bool fromRescan)
             return;
         }
 
-        const size_t total = payloadData->files.size();
-        const size_t end = std::min(offset + chunkSize, total);
+        size_t total = 0;
+        const auto slice = safeThis->audioProcessor.getScannedFilesSlice(offset, chunkSize, total);
+        const size_t end = offset + slice.size();
         const bool isFirst = (offset == 0);
-        const bool isLast = (end >= total);
+        const bool isLast = (end >= total || slice.empty());
 
         juce::DynamicObject::Ptr obj = new juce::DynamicObject();
         obj->setProperty("reset", isFirst);
         obj->setProperty("done", isLast);
-        obj->setProperty("fromRescan", payloadData->fromRescan);
+        obj->setProperty("fromRescan", fromRescan);
         obj->setProperty("totalCount", static_cast<juce::int64>(total));
 
         if (isFirst)
         {
             juce::Array<juce::var> foldersArr;
-            for (const auto& folderPath : payloadData->folders)
+            for (const auto& folderPath : *folders)
                 foldersArr.add(folderPath);
             obj->setProperty("scannedFolders", foldersArr);
         }
 
         juce::Array<juce::var> filesArr;
-        if (end > offset)
+        if (!slice.empty())
         {
-            filesArr.ensureStorageAllocated(static_cast<int>(end - offset));
-            for (size_t i = offset; i < end; ++i)
+            filesArr.ensureStorageAllocated(static_cast<int>(slice.size()));
+            for (const auto& item : slice)
             {
-                const auto& item = payloadData->files[i];
                 juce::DynamicObject::Ptr fObj = new juce::DynamicObject();
                 fObj->setProperty("name", item.name);
                 fObj->setProperty("relativePath", item.relativePath);
@@ -537,10 +555,10 @@ void MidiPreviewerAudioProcessorEditor::refreshSavedFoldersAsync(const std::vect
             if (safeThis == nullptr)
                 return;
 
-            const auto previousCount = safeThis->audioProcessor.getScannedFiles().size();
+            const auto previousCount = safeThis->audioProcessor.getScannedFilesCount();
             if (!metadataList.empty())
                 safeThis->audioProcessor.appendScannedFiles(metadataList);
-            const auto updatedCount = safeThis->audioProcessor.getScannedFiles().size();
+            const auto updatedCount = safeThis->audioProcessor.getScannedFilesCount();
 
             if (!safeThis->isFrontendReady || safeThis->webBrowser == nullptr)
                 return;
@@ -667,7 +685,19 @@ void MidiPreviewerAudioProcessorEditor::handleNativeLoadFile(const juce::var& ra
 
     if (fullPath.isNotEmpty())
     {
-        loadAndEmitSingleFile(juce::File(fullPath), sourceType, index);
+        const juce::File targetFile(fullPath);
+        if (!targetFile.hasFileExtension("mid;midi"))
+        {
+            if (webBrowser != nullptr && isFrontendReady)
+            {
+                juce::DynamicObject::Ptr errObj = new juce::DynamicObject();
+                errObj->setProperty("name", targetFile.getFileName());
+                errObj->setProperty("error", "Only .mid and .midi files can be loaded.");
+                webBrowser->emitEventIfBrowserIsVisible("midiFileLoadError", juce::var(errObj.get()));
+            }
+            return;
+        }
+        loadAndEmitSingleFile(targetFile, sourceType, index);
     }
     else if (webBrowser != nullptr && isFrontendReady)
     {
@@ -720,7 +750,7 @@ void MidiPreviewerAudioProcessorEditor::handleNativeSaveMidi(const juce::var& ra
         if (target.replaceWithData(bytesBlock->getData(), bytesBlock->getSize()))
         {
             juce::DynamicObject::Ptr obj = new juce::DynamicObject();
-            obj->setProperty("savedPath", target.getFullPathName());
+            obj->setProperty("savedPath", maskHomeDirectoryPath(target));
             if (safeThis->webBrowser != nullptr && safeThis->isFrontendReady)
                 safeThis->webBrowser->emitEventIfBrowserIsVisible("exportSaved", juce::var(obj.get()));
         }
@@ -747,6 +777,7 @@ void MidiPreviewerAudioProcessorEditor::handleNativeDragMidiToDaw(const juce::va
 
     juce::File tempDir = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("MidiLensExports");
     tempDir.createDirectory();
+    pruneTempExportsDirectory(tempDir);
     juce::File outFile = tempDir.getChildFile(juce::File::createLegalFileName(filename));
 
     if (!outFile.replaceWithData(decoded.getData(), decoded.getDataSize()))
@@ -770,7 +801,7 @@ void MidiPreviewerAudioProcessorEditor::handleSaveUiState(const juce::var& rawPa
         return;
 
     const juce::String stateJson = payload.getProperty("stateJson", "").toString();
-    if (stateJson.isNotEmpty())
+    if (stateJson.isNotEmpty() && stateJson.getNumBytesAsUTF8() <= 2 * 1024 * 1024)
         audioProcessor.setSavedUiStateJson(stateJson);
 }
 
@@ -798,7 +829,7 @@ void MidiPreviewerAudioProcessorEditor::handleRescanSavedFolders()
                 obj->setProperty("reset", false);
                 obj->setProperty("done", true);
                 obj->setProperty("fromRescan", true);
-                obj->setProperty("totalCount", static_cast<juce::int64>(safeThis->audioProcessor.getScannedFiles().size()));
+                obj->setProperty("totalCount", static_cast<juce::int64>(safeThis->audioProcessor.getScannedFilesCount()));
                 obj->setProperty("files", juce::Array<juce::var>());
                 safeThis->webBrowser->emitEventIfBrowserIsVisible("libraryChunk", juce::var(obj.get()));
             }
@@ -848,24 +879,68 @@ void MidiPreviewerAudioProcessorEditor::timerCallback()
     if (!isFrontendReady || webBrowser == nullptr || !isShowing())
         return;
 
-    juce::DynamicObject::Ptr obj = new juce::DynamicObject();
-    obj->setProperty("playheadPpq", audioProcessor.getCurrentPlayheadPpq());
-    obj->setProperty("isPlaying", audioProcessor.isAudioPlaying());
-    obj->setProperty("hostBpm", audioProcessor.getHostBpm());
-    obj->setProperty("hostBpmDetected", audioProcessor.isHostBpmDetected());
-    obj->setProperty("hostTimeSigNumerator", audioProcessor.getHostTimeSigNumerator());
-    obj->setProperty("hostTimeSigDenominator", audioProcessor.getHostTimeSigDenominator());
-    obj->setProperty("hostTimeSigDetected", audioProcessor.isHostTimeSigDetected());
-    obj->setProperty("hostIsPlaying", audioProcessor.isHostPlaying());
-
+    const double playheadPpq = audioProcessor.getCurrentPlayheadPpq();
+    const bool playing = audioProcessor.isAudioPlaying();
+    const double hostBpm = audioProcessor.getHostBpm();
+    const bool hostBpmDetected = audioProcessor.isHostBpmDetected();
+    const int hostTimeSigNum = audioProcessor.getHostTimeSigNumerator();
+    const int hostTimeSigDenom = audioProcessor.getHostTimeSigDenominator();
+    const bool hostTimeSigDetected = audioProcessor.isHostTimeSigDetected();
+    const bool hostIsPlaying = audioProcessor.isHostPlaying();
     const auto hostKey = audioProcessor.getHostKey();
+    const bool isDawConnected = audioProcessor.wrapperType != juce::AudioProcessor::wrapperType_Standalone;
+    auto activePitches = audioProcessor.getActivePitches();
+
+    if (lastTelemetry.initialized
+        && std::abs(playheadPpq - lastTelemetry.playheadPpq) < 1.0e-5
+        && playing == lastTelemetry.isPlaying
+        && std::abs(hostBpm - lastTelemetry.hostBpm) < 1.0e-4
+        && hostBpmDetected == lastTelemetry.hostBpmDetected
+        && hostTimeSigNum == lastTelemetry.hostTimeSigNum
+        && hostTimeSigDenom == lastTelemetry.hostTimeSigDenom
+        && hostTimeSigDetected == lastTelemetry.hostTimeSigDetected
+        && hostIsPlaying == lastTelemetry.hostIsPlaying
+        && hostKey.rootPitch == lastTelemetry.hostKeyRoot
+        && hostKey.isMinor == lastTelemetry.hostKeyIsMinor
+        && hostKey.isDetected == lastTelemetry.hostKeyDetected
+        && isDawConnected == lastTelemetry.isDawConnected
+        && activePitches == lastTelemetry.activePitches)
+    {
+        return;
+    }
+
+    lastTelemetry.playheadPpq = playheadPpq;
+    lastTelemetry.isPlaying = playing;
+    lastTelemetry.hostBpm = hostBpm;
+    lastTelemetry.hostBpmDetected = hostBpmDetected;
+    lastTelemetry.hostTimeSigNum = hostTimeSigNum;
+    lastTelemetry.hostTimeSigDenom = hostTimeSigDenom;
+    lastTelemetry.hostTimeSigDetected = hostTimeSigDetected;
+    lastTelemetry.hostIsPlaying = hostIsPlaying;
+    lastTelemetry.hostKeyRoot = hostKey.rootPitch;
+    lastTelemetry.hostKeyIsMinor = hostKey.isMinor;
+    lastTelemetry.hostKeyDetected = hostKey.isDetected;
+    lastTelemetry.isDawConnected = isDawConnected;
+    lastTelemetry.activePitches = activePitches;
+    lastTelemetry.initialized = true;
+
+    juce::DynamicObject::Ptr obj = new juce::DynamicObject();
+    obj->setProperty("playheadPpq", playheadPpq);
+    obj->setProperty("isPlaying", playing);
+    obj->setProperty("hostBpm", hostBpm);
+    obj->setProperty("hostBpmDetected", hostBpmDetected);
+    obj->setProperty("hostTimeSigNumerator", hostTimeSigNum);
+    obj->setProperty("hostTimeSigDenominator", hostTimeSigDenom);
+    obj->setProperty("hostTimeSigDetected", hostTimeSigDetected);
+    obj->setProperty("hostIsPlaying", hostIsPlaying);
     obj->setProperty("hostKeyRoot", hostKey.rootPitch);
     obj->setProperty("hostKeyIsMinor", hostKey.isMinor);
     obj->setProperty("hostKeyDetected", hostKey.isDetected);
-    obj->setProperty("isDawConnected", audioProcessor.wrapperType != juce::AudioProcessor::wrapperType_Standalone);
+    obj->setProperty("isDawConnected", isDawConnected);
 
     juce::Array<juce::var> pitchArr;
-    for (int p : audioProcessor.getActivePitches())
+    pitchArr.ensureStorageAllocated(static_cast<int>(activePitches.size()));
+    for (int p : activePitches)
         pitchArr.add(p);
     obj->setProperty("activePitches", pitchArr);
 

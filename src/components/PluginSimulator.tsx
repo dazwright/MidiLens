@@ -15,6 +15,7 @@ import {
 import {
   MidiLensPreset,
   PresetSettings,
+  DEFAULT_PRESET_SETTINGS,
   FACTORY_PRESETS,
   PRESET_PACKS,
 } from '../presetManager';
@@ -88,8 +89,96 @@ interface HistorySnapshot {
   description: string;
 }
 
+const MAX_HISTORY_STEPS = 50;
+const MAX_AUTO_META_ENTRIES = 1500;
+const OS_PATH_KEY_PATTERN = /^(?:\/Users\/|\/home\/|\/Volumes\/|\/|[A-Za-z]:\\|\\\\)/i;
+
+function cloneSequenceShallow(seq: MidiSequence): MidiSequence {
+  return {
+    ...seq,
+    notes: seq.notes.map((n) => ({ ...n })),
+  };
+}
+
+function pruneLibraryMeta(meta: Record<string, LibraryFileMeta>): Record<string, LibraryFileMeta> {
+  const keys = Object.keys(meta);
+  if (keys.length <= MAX_AUTO_META_ENTRIES) return meta;
+
+  const result: Record<string, LibraryFileMeta> = {};
+  const autoKeys: string[] = [];
+
+  for (const key of keys) {
+    const entry = meta[key];
+    if (!entry) continue;
+    if (entry.favorite || (Array.isArray(entry.tags) && entry.tags.length > 0)) {
+      result[key] = entry;
+    } else {
+      autoKeys.push(key);
+    }
+  }
+
+  // Retain the most recently added auto-detected entries up to the cap
+  const startIdx = Math.max(0, autoKeys.length - MAX_AUTO_META_ENTRIES);
+  for (let i = startIdx; i < autoKeys.length; i++) {
+    const k = autoKeys[i];
+    result[k] = meta[k];
+  }
+  return result;
+}
+
+function sanitizeLibraryMetaRecord(rawObj: unknown): Record<string, LibraryFileMeta> {
+  if (!rawObj || typeof rawObj !== 'object' || Array.isArray(rawObj)) return {};
+  const cleaned: Record<string, LibraryFileMeta> = {};
+
+  for (const [rawKey, val] of Object.entries(rawObj as Record<string, unknown>)) {
+    if (!val || typeof val !== 'object' || Array.isArray(val)) continue;
+    const item = val as Record<string, unknown>;
+    const isUserAnnotated = Boolean(item.favorite) || (Array.isArray(item.tags) && item.tags.length > 0);
+
+    let safeKey = rawKey;
+    if (OS_PATH_KEY_PATTERN.test(rawKey)) {
+      // Strip raw OS path prefixes so home directories/usernames never remain in localStorage
+      if (!isUserAnnotated) continue;
+      const baseName = rawKey.split(/[\\/]/).pop() || '';
+      if (!baseName) continue;
+      safeKey = baseName;
+    }
+
+    const sanitizedEntry: LibraryFileMeta = {};
+    if (typeof item.favorite === 'boolean' && item.favorite) sanitizedEntry.favorite = true;
+    if (Array.isArray(item.tags)) {
+      const cleanTags = item.tags
+        .filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+        .map((t) => t.trim().slice(0, 32))
+        .slice(0, 20);
+      if (cleanTags.length > 0) sanitizedEntry.tags = cleanTags;
+    }
+    if (typeof item.detectedKey === 'string') sanitizedEntry.detectedKey = item.detectedKey.slice(0, 32);
+    if (typeof item.detectedRoot === 'number' && Number.isFinite(item.detectedRoot)) {
+      sanitizedEntry.detectedRoot = Math.max(0, Math.min(11, Math.round(item.detectedRoot)));
+    }
+    if (typeof item.detectedIsMinor === 'boolean') sanitizedEntry.detectedIsMinor = item.detectedIsMinor;
+    if (typeof item.bpm === 'number' && Number.isFinite(item.bpm)) {
+      sanitizedEntry.bpm = Math.max(20, Math.min(320, Math.round(item.bpm)));
+    }
+
+    cleaned[safeKey] = sanitizedEntry;
+  }
+
+  return pruneLibraryMeta(cleaned);
+}
+
+const EMPTY_SEQUENCE: MidiSequence = {
+  name: 'Empty',
+  bpm: 120,
+  timeSigNumerator: 4,
+  timeSigDenominator: 4,
+  totalLengthPpq: 16,
+  notes: [],
+};
+
 export const PluginSimulator: React.FC = () => {
-  const [sequence, setSequence] = useState<MidiSequence>(PRESET_SEQUENCES[0]);
+  const [sequence, setSequence] = useState<MidiSequence>(EMPTY_SEQUENCE);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playheadPpq, setPlayheadPpq] = useState(0);
 
@@ -97,15 +186,15 @@ export const PluginSimulator: React.FC = () => {
   const [pastHistory, setPastHistory] = useState<HistorySnapshot[]>([]);
   const [futureHistory, setFutureHistory] = useState<HistorySnapshot[]>([]);
 
-  // Active Settings Preset State
-  const [activeLensPreset, setActiveLensPreset] = useState<MidiLensPreset>(FACTORY_PRESETS[0]);
+  // Active Settings Preset State (starts unselected/empty on load)
+  const [activeLensPreset, setActiveLensPreset] = useState<MidiLensPreset | null>(null);
   const [showPresetDrawer, setShowPresetDrawer] = useState(false);
 
   const [params, setParams] = useState<PluginParameters>({
-    transpose: FACTORY_PRESETS[0].settings.transpose,
-    speedMultiplier: FACTORY_PRESETS[0].settings.speedMultiplier,
-    velocityScale: FACTORY_PRESETS[0].settings.velocityScale,
-    velocityOffset: FACTORY_PRESETS[0].settings.velocityOffset,
+    transpose: DEFAULT_PRESET_SETTINGS.transpose,
+    speedMultiplier: DEFAULT_PRESET_SETTINGS.speedMultiplier,
+    velocityScale: DEFAULT_PRESET_SETTINGS.velocityScale,
+    velocityOffset: DEFAULT_PRESET_SETTINGS.velocityOffset,
     syncMode: 'daw',
     loop: true,
     loopStartPpq: 0,
@@ -115,11 +204,11 @@ export const PluginSimulator: React.FC = () => {
     targetScaleType: 'minor',
     projectKeyRoot: 0,
     projectScaleType: 'major',
-    scaleRoot: FACTORY_PRESETS[0].settings.scaleRoot,
-    scaleType: FACTORY_PRESETS[0].settings.scaleType,
-    scaleLock: FACTORY_PRESETS[0].settings.scaleLock,
-    quantizeGrid: FACTORY_PRESETS[0].settings.quantizeGrid,
-    quantizeStrength: FACTORY_PRESETS[0].settings.quantizeStrength ?? 100,
+    scaleRoot: DEFAULT_PRESET_SETTINGS.scaleRoot,
+    scaleType: DEFAULT_PRESET_SETTINGS.scaleType,
+    scaleLock: DEFAULT_PRESET_SETTINGS.scaleLock,
+    quantizeGrid: DEFAULT_PRESET_SETTINGS.quantizeGrid,
+    quantizeStrength: DEFAULT_PRESET_SETTINGS.quantizeStrength,
     arpEnabled: false,
     arpMode: 'up',
     arpRate: '1/16',
@@ -137,7 +226,7 @@ export const PluginSimulator: React.FC = () => {
   const [swingPercent, setSwingPercent] = useState(55);
   const [strumMs, setStrumMs] = useState(25);
 
-  const [keyResult, setKeyResult] = useState<KeyResult>(() => analyzeKeyFromNotes(PRESET_SEQUENCES[0].notes));
+  const [keyResult, setKeyResult] = useState<KeyResult>(() => analyzeKeyFromNotes(EMPTY_SEQUENCE.notes));
   const [isDraggingFile, setIsDraggingFile] = useState(false);
 
   // Folder scanning state (non-blocking chunked scan & streaming progress)
@@ -147,11 +236,13 @@ export const PluginSimulator: React.FC = () => {
     scannedFilesRef.current = scannedFiles;
   }, [scannedFiles]);
 
-  // Persistent Library Favourites, Custom Tags & Detected Key/BPM Metadata
+  // Persistent Library Favourites, Custom Tags & Detected Key/BPM Metadata (local browser storage only; never embedded in DAW project saves)
   const [libraryMeta, setLibraryMeta] = useState<Record<string, LibraryFileMeta>>(() => {
     try {
       const raw = localStorage.getItem('midilens_library_meta_v1');
-      if (raw) return JSON.parse(raw);
+      if (raw && raw.length <= 2 * 1024 * 1024) {
+        return sanitizeLibraryMetaRecord(JSON.parse(raw));
+      }
     } catch {
       // ignore storage read error
     }
@@ -159,7 +250,8 @@ export const PluginSimulator: React.FC = () => {
   });
   useEffect(() => {
     try {
-      localStorage.setItem('midilens_library_meta_v1', JSON.stringify(libraryMeta));
+      const pruned = pruneLibraryMeta(libraryMeta);
+      localStorage.setItem('midilens_library_meta_v1', JSON.stringify(pruned));
     } catch {
       // ignore storage quota error
     }
@@ -176,17 +268,32 @@ export const PluginSimulator: React.FC = () => {
   const isCancelledRef = useRef(false);
   const currentDiscoveredRef = useRef<ScannedMidiFile[]>([]);
 
-  // Active Source Selection (preset pattern, scanned folder file, or uploaded single file)
-  const [activeSourceType, setActiveSourceType] = useState<'preset' | 'scanned' | 'custom'>('preset');
+  // Active Source Selection (empty on load, preset pattern, scanned folder file, or uploaded single file)
+  const [activeSourceType, setActiveSourceType] = useState<'empty' | 'preset' | 'scanned' | 'custom'>('empty');
   const [currentScannedFileIdx, setCurrentScannedFileIdx] = useState<number>(-1);
   const [isWaitingFolderAuth, setIsWaitingFolderAuth] = useState(false);
   const [notificationBanner, setNotificationBanner] = useState<string | null>(null);
+  const bannerTimeoutRef = useRef<number | null>(null);
+
+  const showNotification = useCallback((message: string | null, durationMs?: number) => {
+    if (bannerTimeoutRef.current !== null) {
+      window.clearTimeout(bannerTimeoutRef.current);
+      bannerTimeoutRef.current = null;
+    }
+    setNotificationBanner(message);
+    if (message !== null && durationMs && durationMs > 0) {
+      bannerTimeoutRef.current = window.setTimeout(() => {
+        bannerTimeoutRef.current = null;
+        setNotificationBanner(null);
+      }, durationMs);
+    }
+  }, []);
 
   // Humanize & Dynamics panel state
   const [showHumanizeModal, setShowHumanizeModal] = useState(false);
-  const [humanizeVelRange, setHumanizeVelRange] = useState(FACTORY_PRESETS[0].settings.humanizeVelRange);
-  const [randomMinVel, setRandomMinVel] = useState(FACTORY_PRESETS[0].settings.randomMinVel);
-  const [randomMaxVel, setRandomMaxVel] = useState(FACTORY_PRESETS[0].settings.randomMaxVel);
+  const [humanizeVelRange, setHumanizeVelRange] = useState(DEFAULT_PRESET_SETTINGS.humanizeVelRange);
+  const [randomMinVel, setRandomMinVel] = useState(DEFAULT_PRESET_SETTINGS.randomMinVel);
+  const [randomMaxVel, setRandomMaxVel] = useState(DEFAULT_PRESET_SETTINGS.randomMaxVel);
 
   // Rule-Based MIDI Generator state
   const [showGeneratorPanel, setShowGeneratorPanel] = useState(false);
@@ -211,9 +318,9 @@ export const PluginSimulator: React.FC = () => {
   // Push snapshot before performing destructive sequence changes (maintains up to 50 historical steps)
   const pushHistorySnapshot = useCallback(
     (description: string) => {
-      const snap = JSON.parse(JSON.stringify(sequenceRef.current));
+      const snap = cloneSequenceShallow(sequenceRef.current);
       setPastHistory((prev) => [
-        ...prev.slice(-49), // Retains up to 50 undo states
+        ...prev.slice(-(MAX_HISTORY_STEPS - 1)),
         {
           sequence: snap,
           description,
@@ -232,10 +339,10 @@ export const PluginSimulator: React.FC = () => {
 
       setFutureHistory((prevFuture) => [
         {
-          sequence: JSON.parse(JSON.stringify(sequenceRef.current)),
+          sequence: cloneSequenceShallow(sequenceRef.current),
           description: 'Undo',
         },
-        ...prevFuture,
+        ...prevFuture.slice(0, MAX_HISTORY_STEPS - 1),
       ]);
 
       setSequence(previous.sequence);
@@ -250,9 +357,9 @@ export const PluginSimulator: React.FC = () => {
       const newFuture = prevFuture.slice(1);
 
       setPastHistory((prevPast) => [
-        ...prevPast,
+        ...prevPast.slice(-(MAX_HISTORY_STEPS - 1)),
         {
-          sequence: JSON.parse(JSON.stringify(sequenceRef.current)),
+          sequence: cloneSequenceShallow(sequenceRef.current),
           description: 'Redo',
         },
       ]);
@@ -320,9 +427,8 @@ export const PluginSimulator: React.FC = () => {
     setPlayheadPpq(0);
     setSelectedNoteIds(new Set());
     setSequence(targetSeq);
-    setNotificationBanner(`✓ Loaded Preset Groove: "${preset.name}"`);
-    setTimeout(() => setNotificationBanner(null), 3500);
-  }, [pushHistorySnapshot]);
+    showNotification(`✓ Loaded Preset Groove: "${preset.name}"`, 3500);
+  }, [pushHistorySnapshot, showNotification]);
 
   // Current Settings Payload for Saving New Preset
   const getCurrentSettingsPayload = (): PresetSettings => ({
@@ -346,18 +452,18 @@ export const PluginSimulator: React.FC = () => {
   const hasRestoredJuceStateRef = useRef<boolean>(false);
 
   useEffect(() => {
-    const notesForPlayback = params.arpEnabled
-      ? arpeggiateNotes(sequence.notes, sequence.totalLengthPpq, {
-          mode: params.arpMode,
-          rate: params.arpRate,
-          octaves: params.arpOctaves,
-          gate: params.arpGate,
-        })
-      : sequence.notes;
-
     synthAudioEngine.setSequence(sequence.notes, sequence.totalLengthPpq, sequence.bpm);
 
     if (isJuceNative()) {
+      const notesForPlayback = params.arpEnabled
+        ? arpeggiateNotes(sequence.notes, sequence.totalLengthPpq, {
+            mode: params.arpMode,
+            rate: params.arpRate,
+            octaves: params.arpOctaves,
+            gate: params.arpGate,
+          })
+        : sequence.notes;
+
       const resetPlayhead = lastSyncedSeqNameRef.current !== '' && lastSyncedSeqNameRef.current !== sequence.name;
       lastSyncedSeqNameRef.current = sequence.name;
       emitToJuce('syncSequence', {
@@ -474,7 +580,7 @@ export const PluginSimulator: React.FC = () => {
       setIsScanning(false);
       setIsWaitingFolderAuth(false);
       if (!payload || payload.canceled) {
-        setNotificationBanner(null);
+        showNotification(null);
         return;
       }
 
@@ -486,10 +592,10 @@ export const PluginSimulator: React.FC = () => {
         const addedCount = Number(payload.addedCount || 0);
         setVisibleLibraryCount(50);
         if (addedCount > 0) {
-          setNotificationBanner(
-            `✓ Added "${payload.folderName || 'Folder'}" (${addedCount.toLocaleString()} MIDI files) to library.`
+          showNotification(
+            `✓ Added "${payload.folderName || 'Folder'}" (${addedCount.toLocaleString()} MIDI files) to library.`,
+            4000
           );
-          setTimeout(() => setNotificationBanner(null), 4000);
         }
         return;
       }
@@ -504,8 +610,7 @@ export const PluginSimulator: React.FC = () => {
         : [];
 
       if (incoming.length === 0) {
-        setNotificationBanner('No .mid or .midi files found in the selected folder.');
-        setTimeout(() => setNotificationBanner(null), 5000);
+        showNotification('No .mid or .midi files found in the selected folder.', 5000);
         return;
       }
 
@@ -523,10 +628,10 @@ export const PluginSimulator: React.FC = () => {
       });
       setVisibleLibraryCount(50);
 
-      setNotificationBanner(
-        `✓ Added "${payload.folderName || 'Folder'}" (${incoming.length.toLocaleString()} MIDI files) to library.`
+      showNotification(
+        `✓ Added "${payload.folderName || 'Folder'}" (${incoming.length.toLocaleString()} MIDI files) to library.`,
+        4000
       );
-      setTimeout(() => setNotificationBanner(null), 4000);
     });
 
     const unsubLibraryChunk = onJuceEvent('libraryChunk', (rawPayload: any) => {
@@ -555,16 +660,14 @@ export const PluginSimulator: React.FC = () => {
       if (payload.done && payload.fromRescan) {
         setIsRescanning(false);
         const total = Number(payload.totalCount ?? chunk.length);
-        setNotificationBanner(`✓ Library rescanned (${total.toLocaleString()} MIDI files indexed).`);
-        setTimeout(() => setNotificationBanner(null), 3500);
+        showNotification(`✓ Library rescanned (${total.toLocaleString()} MIDI files indexed).`, 3500);
       }
     });
 
     const unsubMidiLoaded = onJuceEvent('midiFileLoaded', (rawPayload: any) => {
       const payload = unwrapJucePayload(rawPayload);
       if (!payload || !payload.base64) {
-        setNotificationBanner('Could not load MIDI file: empty data returned from host.');
-        setTimeout(() => setNotificationBanner(null), 4500);
+        showNotification('Could not load MIDI file: empty data returned from host.', 4500);
         return;
       }
       try {
@@ -588,9 +691,8 @@ export const PluginSimulator: React.FC = () => {
             (payload.fullPath
               ? scannedFilesRef.current.find((f) => f.nativePath === payload.fullPath)
               : undefined);
-          const fileKey = matchedFile
-            ? getLibraryFileKey(matchedFile)
-            : String(payload.fullPath || fileName);
+          // Never embed raw OS nativePath in persisted libraryMeta keys
+          const fileKey = matchedFile ? getLibraryFileKey(matchedFile) : fileName;
           const detected = analyzeKeyFromNotes(parsed.notes);
           setLibraryMeta((prev) => ({
             ...prev,
@@ -605,15 +707,12 @@ export const PluginSimulator: React.FC = () => {
         }
         setSequence(parsed);
         if (parsed.notes.length === 0) {
-          setNotificationBanner(`Warning: "${fileName}" was loaded but contains no MIDI note events.`);
-          setTimeout(() => setNotificationBanner(null), 5000);
+          showNotification(`Warning: "${fileName}" was loaded but contains no MIDI note events.`, 5000);
         } else {
-          setNotificationBanner(`✓ Loaded "${fileName}" (${parsed.notes.length} notes) into piano roll.`);
-          setTimeout(() => setNotificationBanner(null), 3500);
+          showNotification(`✓ Loaded "${fileName}" (${parsed.notes.length} notes) into piano roll.`, 3500);
         }
       } catch (err) {
-        setNotificationBanner(`Could not parse MIDI file: ${(err as Error).message}`);
-        setTimeout(() => setNotificationBanner(null), 5000);
+        showNotification(`Could not parse MIDI file: ${(err as Error).message}`, 5000);
       }
     });
 
@@ -621,15 +720,13 @@ export const PluginSimulator: React.FC = () => {
       const payload = unwrapJucePayload(rawPayload);
       const name = payload?.name ? `"${payload.name}"` : 'MIDI file';
       const detail = payload?.error || 'File could not be read from disk.';
-      setNotificationBanner(`Unable to load ${name}: ${detail}`);
-      setTimeout(() => setNotificationBanner(null), 5500);
+      showNotification(`Unable to load ${name}: ${detail}`, 5500);
     });
 
     const unsubExportSaved = onJuceEvent('exportSaved', (rawPayload: any) => {
       const payload = unwrapJucePayload(rawPayload);
       if (payload?.savedPath) {
-        setNotificationBanner(`✓ Exported MIDI file to "${payload.savedPath}"`);
-        setTimeout(() => setNotificationBanner(null), 4000);
+        showNotification(`✓ Exported MIDI file to "${payload.savedPath}"`, 4000);
       }
     });
 
@@ -661,16 +758,15 @@ export const PluginSimulator: React.FC = () => {
           }
           if (parsedState.activePresetId) {
             const foundPreset = FACTORY_PRESETS.find((p) => p.id === parsedState.activePresetId);
-            if (foundPreset) setActiveLensPreset(foundPreset);
+            setActiveLensPreset(foundPreset ?? null);
+          } else {
+            setActiveLensPreset(null);
           }
           if (parsedState.activeSourceType) {
             setActiveSourceType(parsedState.activeSourceType);
           }
           if (typeof parsedState.currentScannedFileIdx === 'number') {
             setCurrentScannedFileIdx(parsedState.currentScannedFileIdx);
-          }
-          if (parsedState.libraryMeta && typeof parsedState.libraryMeta === 'object') {
-            setLibraryMeta((prev) => ({ ...parsedState.libraryMeta, ...prev }));
           }
         } catch {
           // ignore malformed state JSON
@@ -690,9 +786,10 @@ export const PluginSimulator: React.FC = () => {
       unsubExportSaved();
       unsubRestore();
     };
-  }, []);
+  }, [showNotification]);
 
-  // Persist UI state to C++ processor for DAW project / window reload recall
+  // Persist instance UI state to C++ processor for DAW project / window reload recall
+  // Deliberately excludes local user sample library metadata so DAW projects stay portable and private
   useEffect(() => {
     if (!isJuceNative()) return;
     const timer = window.setTimeout(() => {
@@ -700,15 +797,14 @@ export const PluginSimulator: React.FC = () => {
         stateJson: JSON.stringify({
           sequence,
           params,
-          activePresetId: activeLensPreset.id,
+          activePresetId: activeLensPreset?.id ?? null,
           activeSourceType,
           currentScannedFileIdx,
-          libraryMeta,
         }),
       });
-    }, 250);
+    }, 600);
     return () => window.clearTimeout(timer);
-  }, [sequence, params, activeLensPreset.id, activeSourceType, currentScannedFileIdx, libraryMeta]);
+  }, [sequence, params, activeLensPreset?.id, activeSourceType, currentScannedFileIdx]);
 
   const handleToggleFavorite = useCallback((fileKey: string) => {
     setLibraryMeta((prev) => {
@@ -807,6 +903,18 @@ export const PluginSimulator: React.FC = () => {
   const [isTapActive, setIsTapActive] = useState(false);
   const tapTimesRef = useRef<number[]>([]);
   const tapTimeoutRef = useRef<number | null>(null);
+
+  // Clean up any active UI/tap timers on unmount
+  useEffect(() => {
+    return () => {
+      if (bannerTimeoutRef.current !== null) {
+        window.clearTimeout(bannerTimeoutRef.current);
+      }
+      if (tapTimeoutRef.current !== null) {
+        window.clearTimeout(tapTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     setTempoInputValue(String(sequence.bpm));
@@ -958,15 +1066,15 @@ export const PluginSimulator: React.FC = () => {
         setTempoInputValue(String(dawHostBpm));
         synthAudioEngine.setTempo(dawHostBpm);
       }
-      setNotificationBanner(
+      showNotification(
         `✓ Synced to Project: ${keyLabel}${dawHostBpm !== null ? ` @ ${dawHostBpm} BPM` : ''}${
           dawHostTimeSig ? ` (${dawHostTimeSig.num}/${dawHostTimeSig.den})` : ''
-        }`
+        }`,
+        3500
       );
     } else {
-      setNotificationBanner(`✓ Synced to Project Key: ${keyLabel}`);
+      showNotification(`✓ Synced to Project Key: ${keyLabel}`, 3500);
     }
-    window.setTimeout(() => setNotificationBanner(null), 3500);
   };
 
   // Active key selection for rule-based generation: DAW Project Key when connected, otherwise App Key
@@ -1049,12 +1157,12 @@ export const PluginSimulator: React.FC = () => {
         scaleType: targetScale,
       }));
 
-      setNotificationBanner(
+      showNotification(
         preservedLocked.length > 0
           ? `Generated ${patternType.toUpperCase()} in ${rootLabel} ${scaleLabel} (${keySourceLabel}) · Preserved ${preservedLocked.length} locked note${preservedLocked.length > 1 ? 's' : ''}`
-          : `Generated ${patternType.toUpperCase()} in ${rootLabel} ${scaleLabel} (${keySourceLabel})`
+          : `Generated ${patternType.toUpperCase()} in ${rootLabel} ${scaleLabel} (${keySourceLabel})`,
+        4000
       );
-      window.setTimeout(() => setNotificationBanner(null), 4000);
     },
     [
       generatorType,
@@ -1066,6 +1174,7 @@ export const PluginSimulator: React.FC = () => {
       sequence.timeSigNumerator,
       sequence.timeSigDenominator,
       pushHistorySnapshot,
+      showNotification,
     ]
   );
 
@@ -1150,12 +1259,12 @@ export const PluginSimulator: React.FC = () => {
           ? Math.min(scaled.totalLengthPpq, prev.loopEndPpq * factor)
           : null,
     }));
-    setNotificationBanner(
+    showNotification(
       factor === 0.5
         ? '✓ Compressed notes 0.5× (Double-Time) onto DAW grid — ready to drag to Logic Pro.'
-        : '✓ Stretched notes 2× (Half-Time) onto DAW grid — ready to drag to Logic Pro.'
+        : '✓ Stretched notes 2× (Half-Time) onto DAW grid — ready to drag to Logic Pro.',
+      3500
     );
-    window.setTimeout(() => setNotificationBanner(null), 3500);
   };
 
   // Chord Voicing Tools: Invert Up/Down, Drop-2, Open Voicing
@@ -1442,7 +1551,7 @@ export const PluginSimulator: React.FC = () => {
     if (item.file) {
       loadMidiFromFile(item.file, item);
     } else if (item.nativePath && isJuceNative()) {
-      setNotificationBanner(`⏳ Loading "${item.name}" (syncing from cloud if needed)...`);
+      showNotification(`⏳ Loading "${item.name}" (syncing from cloud if needed)...`);
       emitToJuce('nativeLoadFile', {
         name: item.name,
         fullPath: item.nativePath,
@@ -1450,10 +1559,10 @@ export const PluginSimulator: React.FC = () => {
         sourceType: 'scanned',
       });
     } else {
-      setNotificationBanner(
-        `Unable to load "${item.name}": file handle unavailable. Please re-scan the folder.`
+      showNotification(
+        `Unable to load "${item.name}": file handle unavailable. Please re-scan the folder.`,
+        5000
       );
-      setTimeout(() => setNotificationBanner(null), 5000);
     }
   };
 
@@ -1481,9 +1590,9 @@ export const PluginSimulator: React.FC = () => {
   const handleRescanSavedFolders = useCallback(() => {
     if (!isJuceNative() || isRescanning) return;
     setIsRescanning(true);
-    setNotificationBanner('⏳ Re-checking remembered folders for new MIDI files...');
+    showNotification('⏳ Re-checking remembered folders for new MIDI files...');
     emitToJuce('rescanSavedFolders', {});
-  }, [isRescanning]);
+  }, [isRescanning, showNotification]);
 
   // Step backwards / forwards across active source items (scanned files or presets)
   const handleStepItem = (direction: -1 | 1) => {
@@ -1513,7 +1622,7 @@ export const PluginSimulator: React.FC = () => {
       loadScannedItem(chosen, randIdx);
     } else {
       // Library is empty: prompt user to scan their folder and open folder picker directly
-      setNotificationBanner("📁 Your MIDI library is empty. Please select a folder to build your library!");
+      showNotification("📁 Your MIDI library is empty. Please select a folder to build your library!");
       handleScanFolderClick();
     }
   };
@@ -1563,9 +1672,10 @@ export const PluginSimulator: React.FC = () => {
   // Cancel folder scanning immediately
   const cancelScan = () => {
     isCancelledRef.current = true;
+    currentDiscoveredRef.current = [];
     setIsScanning(false);
     setIsWaitingFolderAuth(false);
-    setNotificationBanner(null);
+    showNotification(null);
     if (folderInputRef.current) {
       folderInputRef.current.value = '';
     }
@@ -1577,6 +1687,7 @@ export const PluginSimulator: React.FC = () => {
     setIsScanning(false);
     setIsWaitingFolderAuth(false);
     const discovered = [...currentDiscoveredRef.current];
+    currentDiscoveredRef.current = [];
     setScannedFiles((prev) => {
       if (prev.length === 0) return discovered;
       const existingKeys = new Set(prev.map((p) => `${p.relativePath}::${p.sizeBytes}`));
@@ -1585,8 +1696,7 @@ export const PluginSimulator: React.FC = () => {
     });
     setVisibleLibraryCount(50);
     if (discovered.length > 0) {
-      setNotificationBanner(`✓ Added ${discovered.length.toLocaleString()} MIDI files to library.`);
-      setTimeout(() => setNotificationBanner(null), 4000);
+      showNotification(`✓ Added ${discovered.length.toLocaleString()} MIDI files to library.`, 4000);
     }
     if (folderInputRef.current) {
       folderInputRef.current.value = '';
@@ -1602,13 +1712,13 @@ export const PluginSimulator: React.FC = () => {
 
     if (isJuceNative()) {
       setIsWaitingFolderAuth(true);
-      setNotificationBanner('📁 Select a folder in Finder to scan MIDI files into your library...');
+      showNotification('📁 Select a folder in Finder to scan MIDI files into your library...');
       emitToJuce('nativeScanFolder', { append: true });
       return;
     }
 
     setIsWaitingFolderAuth(true);
-    setNotificationBanner("📁 Folder chooser opened. When prompted by your browser, confirm 'Upload' or 'Allow' to scan files locally in your browser.");
+    showNotification("📁 Folder chooser opened. When prompted by your browser, confirm 'Upload' or 'Allow' to scan files locally in your browser.");
 
     const onWindowFocus = () => {
       setTimeout(() => {
@@ -1630,7 +1740,7 @@ export const PluginSimulator: React.FC = () => {
     const fileList = e.target.files;
     if (!fileList || fileList.length === 0) {
       setIsScanning(false);
-      setNotificationBanner(null);
+      showNotification(null);
       return;
     }
 
@@ -1640,15 +1750,16 @@ export const PluginSimulator: React.FC = () => {
     const discovered: ScannedMidiFile[] = [];
     currentDiscoveredRef.current = discovered;
     setScanProgress({ scanned: 0, total: totalFiles, found: 0 });
-    setNotificationBanner(`Scanning ${totalFiles.toLocaleString()} files for MIDI...`);
+    showNotification(`Scanning ${totalFiles.toLocaleString()} files for MIDI...`);
 
     const CHUNK_SIZE = 400; // Rapid chunking for ultra-fast scanning across huge folders (30k+ files)
     let idx = 0;
 
     const processNextChunk = () => {
       if (isCancelledRef.current) {
+        currentDiscoveredRef.current = [];
         setIsScanning(false);
-        setNotificationBanner(null);
+        showNotification(null);
         return;
       }
 
@@ -1677,10 +1788,9 @@ export const PluginSimulator: React.FC = () => {
       setScanProgress({ scanned: idx, total: totalFiles, found: discovered.length });
 
       if (idx < totalFiles) {
-        // Yield to event loop to keep UI 100% interactive and non-blocking
         setTimeout(processNextChunk, 0);
       } else {
-        // Complete - Merge newly discovered files into existing library avoiding duplicates
+        currentDiscoveredRef.current = [];
         setScannedFiles((prev) => {
           if (prev.length === 0) return [...discovered];
           const existingKeys = new Set(prev.map((p) => `${p.relativePath}::${p.sizeBytes}`));
@@ -1691,11 +1801,9 @@ export const PluginSimulator: React.FC = () => {
         setVisibleLibraryCount(50);
 
         if (discovered.length > 0) {
-          setNotificationBanner(`✓ Added ${discovered.length.toLocaleString()} MIDI files to library.`);
-          setTimeout(() => setNotificationBanner(null), 4000);
+          showNotification(`✓ Added ${discovered.length.toLocaleString()} MIDI files to library.`, 4000);
         } else {
-          setNotificationBanner(`Scanned ${totalFiles.toLocaleString()} files: No .mid or .midi files found in the selected folder.`);
-          setTimeout(() => setNotificationBanner(null), 6000);
+          showNotification(`Scanned ${totalFiles.toLocaleString()} files: No .mid or .midi files found in the selected folder.`, 6000);
         }
 
         if (folderInputRef.current) {
@@ -1704,22 +1812,21 @@ export const PluginSimulator: React.FC = () => {
       }
     };
 
-    // Begin chunked processing on next tick
     setTimeout(processNextChunk, 10);
   };
 
   const loadMidiFromFile = (file?: File, scannedItem?: ScannedMidiFile) => {
     if (!file) return;
-    setNotificationBanner(`⏳ Loading "${file.name}"...`);
+    showNotification(`⏳ Loading "${file.name}"...`);
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
         const buffer = event.target?.result as ArrayBuffer;
         if (!buffer || buffer.byteLength === 0) {
-          setNotificationBanner(
-            `Unable to load "${file.name}": 0 bytes read (if stored online-only in Google Drive/iCloud, mark the folder "Available offline" or load via the installed AU/Standalone plugin).`
+          showNotification(
+            `Unable to load "${file.name}": 0 bytes read (if stored online-only in Google Drive/iCloud, mark the folder "Available offline" or load via the installed AU/Standalone plugin).`,
+            6500
           );
-          setTimeout(() => setNotificationBanner(null), 6500);
           return;
         }
         const parsed = parseMidiFile(buffer, file.name);
@@ -1743,20 +1850,16 @@ export const PluginSimulator: React.FC = () => {
         }
         setSequence(parsed);
         if (parsed.notes.length === 0) {
-          setNotificationBanner(`Warning: "${file.name}" was loaded but contains no MIDI note events.`);
-          setTimeout(() => setNotificationBanner(null), 5000);
+          showNotification(`Warning: "${file.name}" was loaded but contains no MIDI note events.`, 5000);
         } else {
-          setNotificationBanner(`✓ Loaded "${file.name}" (${parsed.notes.length} notes) into piano roll.`);
-          setTimeout(() => setNotificationBanner(null), 3500);
+          showNotification(`✓ Loaded "${file.name}" (${parsed.notes.length} notes) into piano roll.`, 3500);
         }
       } catch (err) {
-        setNotificationBanner('Could not parse MIDI file: ' + (err as Error).message);
-        setTimeout(() => setNotificationBanner(null), 5000);
+        showNotification('Could not parse MIDI file: ' + (err as Error).message, 5000);
       }
     };
     reader.onerror = () => {
-      setNotificationBanner(`Could not read "${file.name}". Please check file permissions.`);
-      setTimeout(() => setNotificationBanner(null), 5000);
+      showNotification(`Could not read "${file.name}". Please check file permissions.`, 5000);
     };
     reader.readAsArrayBuffer(file);
   };
@@ -1855,13 +1958,12 @@ export const PluginSimulator: React.FC = () => {
         setIsScanning(false);
         setVisibleLibraryCount(50);
         if (discovered.length > 0) {
-          setNotificationBanner(`✓ Added ${discovered.length.toLocaleString()} MIDI files from dropped folder to library.`);
-          setTimeout(() => setNotificationBanner(null), 4000);
+          showNotification(`✓ Added ${discovered.length.toLocaleString()} MIDI files from dropped folder to library.`, 4000);
         } else {
-          setNotificationBanner('No .mid or .midi files were found in the dropped folder.');
-          setTimeout(() => setNotificationBanner(null), 5000);
+          showNotification('No .mid or .midi files were found in the dropped folder.', 5000);
         }
       }
+      currentDiscoveredRef.current = [];
       return;
     }
 
@@ -1967,12 +2069,16 @@ export const PluginSimulator: React.FC = () => {
           {/* Recessed Amber LED Tube: Active Sequence */}
           <div
             className="flex items-center gap-2 px-3 py-1 bg-[#0c0e10] border border-neutral-700/80 rounded shadow-[inset_0_2px_5px_rgba(0,0,0,0.9)] font-mono text-xs"
-            title={`Active sequence: ${sequence.name} (${sequence.notes.length} notes, ${sequence.bpm} BPM)`}
+            title={
+              activeSourceType === 'empty' && sequence.notes.length === 0
+                ? 'Piano roll is empty — drop, open, or generate a MIDI pattern'
+                : `Active sequence: ${sequence.name} (${sequence.notes.length} notes, ${sequence.bpm} BPM)`
+            }
           >
             <Music className="w-3.5 h-3.5 text-amber-500 shrink-0" />
             <span className="silkscreen-label text-neutral-500">ACTIVE:</span>
             <span className="font-bold text-amber-400 drop-shadow-[0_0_8px_rgba(245,158,11,0.5)] truncate max-w-[240px]">
-              {sequence.name}
+              {activeSourceType === 'empty' && sequence.notes.length === 0 ? 'Empty' : sequence.name}
             </span>
             <span className="text-[10px] text-neutral-500 font-mono">[{sequence.notes.length} N]</span>
           </div>
@@ -1984,7 +2090,7 @@ export const PluginSimulator: React.FC = () => {
             title={
               scannedFiles.length > 0
                 ? `Pick a random MIDI file from your library (${scannedFiles.length.toLocaleString()} files)`
-                : 'Pick a random factory groove'
+                : 'Scan a folder to pick random MIDI files'
             }
           >
             <Dices className="w-3.5 h-3.5 text-amber-500 group-hover:rotate-45 transition-transform" />
@@ -2012,7 +2118,9 @@ export const PluginSimulator: React.FC = () => {
             title="Open Preset Manager to load/save scale, quantization & humanize settings"
           >
             <Bookmark className="w-3.5 h-3.5 text-amber-500 group-hover:scale-110 transition-transform" />
-            <span className="truncate max-w-[110px] sm:max-w-[130px] uppercase text-[10px] tracking-wider">PRESET: {activeLensPreset.name}</span>
+            <span className="truncate max-w-[110px] sm:max-w-[130px] uppercase text-[10px] tracking-wider">
+              {activeLensPreset ? `PRESET: ${activeLensPreset.name}` : 'PRESET'}
+            </span>
             <ChevronDown className="w-3 h-3 text-neutral-400" />
           </button>
 
@@ -2037,10 +2145,13 @@ export const PluginSimulator: React.FC = () => {
                     ? `preset_${currentSequenceIdx}`
                     : activeSourceType === 'custom'
                     ? 'custom_file'
-                    : 'preset_0'
+                    : ''
                 }
                 title="Select a scanned MIDI file or factory groove"
               >
+                <option value="" disabled className="bg-[#121418] text-neutral-500">
+                  — Empty —
+                </option>
                 {activeSourceType === 'custom' && (
                   <optgroup label="📄 Active Open File">
                     <option value="custom_file" className="bg-[#121418] text-neutral-200">
@@ -2201,12 +2312,12 @@ export const PluginSimulator: React.FC = () => {
                 wasMidiDraggedRef.current = false;
                 return;
               }
-              setNotificationBanner(
+              showNotification(
                 isJuceNative()
                   ? 'Click, hold, and drag "DRAG MIDI TO DAW" directly onto any DAW track to drop the .mid clip.'
-                  : 'Grab and drag onto your desktop/DAW, or use EXPORT MIDI to download a .mid file.'
+                  : 'Grab and drag onto your desktop/DAW, or use EXPORT MIDI to download a .mid file.',
+                4000
               );
-              window.setTimeout(() => setNotificationBanner(null), 4000);
             }}
             onMouseDown={(e) => {
               if (!isJuceNative() || e.button !== 0) return;
@@ -2335,7 +2446,7 @@ export const PluginSimulator: React.FC = () => {
           </div>
           {!isScanning && !isWaitingFolderAuth && (
             <button
-              onClick={() => setNotificationBanner(null)}
+              onClick={() => showNotification(null)}
               className="text-slate-400 hover:text-white p-1 ml-2 shrink-0 transition"
               title="Dismiss notification"
             >
@@ -2586,7 +2697,9 @@ export const PluginSimulator: React.FC = () => {
 
           <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]" title="Detected original MIDI key">
             <span className="silkscreen-label text-neutral-500">ORIG:</span>
-            <span className="text-xs font-bold text-emerald-400 font-mono phosphor-glow-green">{keyResult.keyName}</span>
+            <span className="text-xs font-bold text-emerald-400 font-mono phosphor-glow-green">
+              {sequence.notes.length > 0 ? keyResult.keyName : '—'}
+            </span>
           </div>
         </div>
       </div>
@@ -3544,19 +3657,21 @@ export const PluginSimulator: React.FC = () => {
       <PresetDrawer
         isOpen={showPresetDrawer}
         onClose={() => setShowPresetDrawer(false)}
-        activePresetId={activeLensPreset.id}
+        activePresetId={activeLensPreset?.id ?? ''}
         currentSettings={getCurrentSettingsPayload()}
         onSelectPreset={handleApplyLensPreset}
         onPresetSaved={(newPreset) => handleApplyLensPreset(newPreset)}
       />
 
       {/* MIDI Export Modal (Type 0 / Type 1) */}
-      <MidiExportModal
-        isOpen={showExportModal}
-        onClose={() => setShowExportModal(false)}
-        sequence={sequence}
-        params={params}
-      />
+      {showExportModal && (
+        <MidiExportModal
+          isOpen={showExportModal}
+          onClose={() => setShowExportModal(false)}
+          sequence={sequence}
+          params={params}
+        />
+      )}
 
       {/* Real-time Non-blocking Scanning Modal Overlay */}
       {isScanning && (

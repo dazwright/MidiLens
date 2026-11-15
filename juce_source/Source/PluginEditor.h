@@ -54,11 +54,30 @@ private:
     void streamLibraryToWebView(bool fromRescan = false);
     void loadAndEmitSingleFile(const juce::File& midiFile, const juce::String& sourceType, int index);
 
+    struct LastTelemetryState
+    {
+        double playheadPpq { -1.0 };
+        bool isPlaying { false };
+        double hostBpm { -1.0 };
+        bool hostBpmDetected { false };
+        int hostTimeSigNum { 4 };
+        int hostTimeSigDenom { 4 };
+        bool hostTimeSigDetected { false };
+        bool hostIsPlaying { false };
+        int hostKeyRoot { -1 };
+        bool hostKeyIsMinor { false };
+        bool hostKeyDetected { false };
+        bool isDawConnected { false };
+        std::vector<int> activePitches;
+        bool initialized { false };
+    };
+
     MidiPreviewerAudioProcessor& audioProcessor;
     bool isFrontendReady { false };
     std::shared_ptr<std::atomic<bool>> libraryStreamCancelFlag;
     std::shared_ptr<juce::FileChooser> activeFileChooser;
     std::unique_ptr<juce::WebBrowserComponent> webBrowser;
+    LastTelemetryState lastTelemetry;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MidiPreviewerAudioProcessorEditor)
 };
