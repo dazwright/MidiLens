@@ -187,6 +187,15 @@ void MidiPreviewerAudioProcessorEditor::handleFrontendReady()
 {
     isFrontendReady = true;
 
+    const bool isStandalone = (audioProcessor.wrapperType == juce::AudioProcessor::wrapperType_Standalone);
+    if (webBrowser != nullptr)
+    {
+        juce::DynamicObject::Ptr envObj = new juce::DynamicObject();
+        envObj->setProperty("isStandalone", isStandalone);
+        envObj->setProperty("isDawConnected", !isStandalone);
+        webBrowser->emitEventIfBrowserIsVisible("hostEnvironment", juce::var(envObj.get()));
+    }
+
     // Immediately restore UI sequence/params & known folder list without touching disk or walking folders
     const juce::String savedJson = audioProcessor.getSavedUiStateJson();
     const auto folders = audioProcessor.getScannedFolders();
@@ -935,6 +944,7 @@ void MidiPreviewerAudioProcessorEditor::timerCallback()
     obj->setProperty("hostTimeSigDetected", hostTimeSigDetected);
     obj->setProperty("hostIsPlaying", hostIsPlaying);
     obj->setProperty("isDawConnected", isDawConnected);
+    obj->setProperty("isStandalone", !isDawConnected);
 
     juce::Array<juce::var> pitchArr;
     pitchArr.ensureStorageAllocated(static_cast<int>(activePitches.size()));

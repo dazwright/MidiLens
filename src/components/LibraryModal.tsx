@@ -391,17 +391,17 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
               <button
                 onClick={onRescanFolders}
                 disabled={isScanning}
-                className="hardware-button flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-emerald-300 hover:text-emerald-200 disabled:opacity-40 rounded-xl font-mono uppercase tracking-wider transition shrink-0"
+                className="hardware-button flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-amber-300 hover:text-amber-200 disabled:opacity-40 rounded-xl font-mono uppercase tracking-wider transition shrink-0"
                 title="Re-check remembered folders for newly added MIDI files"
               >
-                <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isScanning ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`w-3.5 h-3.5 text-amber-400 ${isScanning ? 'animate-spin' : ''}`} />
                 <span>Rescan</span>
               </button>
             )}
             {onClearLibrary && scannedFiles.length > 0 && (
               <button
                 onClick={onClearLibrary}
-                className="px-2.5 py-1.5 text-[11px] text-neutral-400 hover:text-rose-300 bg-neutral-900/70 hover:bg-rose-950/40 border border-slate-700/80 rounded-xl font-mono uppercase tracking-wider transition shrink-0"
+                className="px-2.5 py-1.5 text-[11px] text-rose-300/90 hover:text-rose-200 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 rounded-xl font-mono uppercase tracking-wider transition shrink-0"
                 title="Clear all remembered folders and scanned files from library"
               >
                 Clear
@@ -830,7 +830,7 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
                       setBpmFilter('ALL');
                       if (viewMode === 'favorites') setViewMode('explorer');
                     }}
-                    className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-sky-300 rounded-xl transition"
+                    className="px-3.5 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 rounded-xl transition"
                   >
                     Clear Filters
                   </button>

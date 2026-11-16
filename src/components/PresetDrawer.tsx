@@ -245,7 +245,7 @@ export const PresetDrawer: React.FC<PresetDrawerProps> = ({
                 onClick={() => setActiveTab(tab)}
                 className={`px-3 py-1 rounded-lg font-semibold transition ${
                   activeTab === tab
-                    ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30'
+                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >

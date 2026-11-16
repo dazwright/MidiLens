@@ -59,14 +59,50 @@ class AudioSynthesizerEngine {
   private filterNode: BiquadFilterNode | null = null;
   private analyserNode: AnalyserNode | null = null;
 
+  // In DAW plugins (AU/VST3), C++ handles playback and WebAudio stays off.
+  // In Standalone mode, WebAudio provides the built-in audition synth while C++ still receives MIDI commands.
+  private suppressWebAudio = isJuceNative();
+  private forwardToJuce = isJuceNative();
+  private standaloneMuted = false;
+
+  public setStandaloneMode(isStandalone: boolean) {
+    if (!isJuceNative()) {
+      this.suppressWebAudio = false;
+      return;
+    }
+    const nextSuppress = !isStandalone;
+    if (this.suppressWebAudio === nextSuppress) return;
+
+    this.suppressWebAudio = nextSuppress;
+    if (nextSuppress) {
+      this.killAllVoices();
+      if (this.animFrameId !== null) {
+        cancelAnimationFrame(this.animFrameId);
+        this.animFrameId = null;
+      }
+    }
+  }
+
+  public setStandaloneMuted(muted: boolean) {
+    this.standaloneMuted = muted;
+    if (muted) {
+      this.killAllVoices();
+    } else if (!this.suppressWebAudio && this.isPlaying) {
+      this.initContext();
+    }
+    if (this.masterGain && this.ctx) {
+      this.masterGain.gain.setValueAtTime(muted ? 0 : 0.3, this.ctx.currentTime);
+    }
+  }
+
   private initContext() {
-    if (isJuceNative()) return;
+    if (this.suppressWebAudio || this.standaloneMuted) return;
     if (!this.ctx) {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       this.ctx = new AudioCtx();
 
       this.masterGain = this.ctx.createGain();
-      this.masterGain.gain.setValueAtTime(0.3, this.ctx.currentTime);
+      this.masterGain.gain.setValueAtTime(this.standaloneMuted ? 0 : 0.3, this.ctx.currentTime);
 
       this.filterNode = this.ctx.createBiquadFilter();
       this.filterNode.type = 'lowpass';
@@ -88,7 +124,7 @@ class AudioSynthesizerEngine {
   }
 
   public getAnalyserNode(): AnalyserNode | null {
-    if (isJuceNative()) return null;
+    if (this.suppressWebAudio) return null;
     this.initContext();
     return this.analyserNode;
   }
@@ -171,10 +207,12 @@ class AudioSynthesizerEngine {
   }
 
   public play() {
-    if (isJuceNative()) {
+    if (this.forwardToJuce) {
+      emitToJuce('transportCommand', { action: 'play' });
+    }
+    if (this.suppressWebAudio) {
       this.isPlaying = true;
       if (this.onStateChangeCallback) this.onStateChangeCallback(true);
-      emitToJuce('transportCommand', { action: 'play' });
       return;
     }
     this.initContext();
@@ -193,46 +231,48 @@ class AudioSynthesizerEngine {
     this.tickLoop();
   }
 
-  public pause() {
-    if (isJuceNative()) {
-      this.isPlaying = false;
-      if (this.onStateChangeCallback) this.onStateChangeCallback(false);
+  private pauseInternal(emitJuceEvent: boolean) {
+    if (emitJuceEvent && this.forwardToJuce) {
       emitToJuce('transportCommand', { action: 'pause' });
-      return;
     }
     this.isPlaying = false;
+    if (this.suppressWebAudio) {
+      if (this.onStateChangeCallback) this.onStateChangeCallback(false);
+      return;
+    }
     this.killAllVoices();
-    if (this.animFrameId) {
+    if (this.animFrameId !== null) {
       cancelAnimationFrame(this.animFrameId);
       this.animFrameId = null;
     }
     if (this.onStateChangeCallback) this.onStateChangeCallback(false);
   }
 
+  public pause() {
+    this.pauseInternal(true);
+  }
+
   public stop() {
     const { loopStart } = this.getActiveLoopBounds();
-    if (isJuceNative()) {
-      this.isPlaying = false;
-      this.currentPpq = loopStart;
-      if (this.onStateChangeCallback) this.onStateChangeCallback(false);
-      if (this.onPlayheadCallback) this.onPlayheadCallback(loopStart);
+    if (this.forwardToJuce) {
       emitToJuce('transportCommand', { action: 'stop' });
-      return;
     }
-    this.pause();
+    this.pauseInternal(false);
     this.currentPpq = loopStart;
     if (this.onPlayheadCallback) this.onPlayheadCallback(loopStart);
-    this.notifyActivePitches();
+    if (!this.suppressWebAudio) {
+      this.notifyActivePitches();
+    }
   }
 
   public seek(ppq: number) {
     this.currentPpq = Math.max(0, Math.min(this.sequenceLengthPpq, ppq));
-    if (isJuceNative()) {
-      if (this.onPlayheadCallback) this.onPlayheadCallback(this.currentPpq);
+    if (this.forwardToJuce) {
       emitToJuce('transportCommand', { action: 'seek', ppq: this.currentPpq });
-      return;
     }
-    this.killAllVoices();
+    if (!this.suppressWebAudio) {
+      this.killAllVoices();
+    }
     if (this.onPlayheadCallback) this.onPlayheadCallback(this.currentPpq);
   }
 
@@ -245,13 +285,15 @@ class AudioSynthesizerEngine {
   }
 
   public auditionNote(pitch: number, velocity: number = 0.75, durationSeconds: number = 0.35) {
-    if (isJuceNative()) {
+    if (this.forwardToJuce) {
       const transposedPitch = Math.min(127, Math.max(0, pitch + this.params.transpose));
       emitToJuce('auditionNote', {
         pitch: transposedPitch,
         velocity: Math.min(1.0, Math.max(0.05, velocity)),
         durationSeconds,
       });
+    }
+    if (this.suppressWebAudio || this.standaloneMuted) {
       return;
     }
     this.initContext();
@@ -325,7 +367,7 @@ class AudioSynthesizerEngine {
   }
 
   private playSynthesizerVoice(note: MidiNote) {
-    if (!this.ctx || !this.filterNode) return;
+    if (this.suppressWebAudio || this.standaloneMuted || !this.ctx || !this.filterNode) return;
 
     // Voice stealing to bound polyphony & WebAudio node count
     while (this.activeVoices.length >= AudioSynthesizerEngine.MAX_POLYPHONY) {

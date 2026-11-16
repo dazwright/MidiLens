@@ -1690,7 +1690,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({
         </button>
         <button
           onClick={handleHalveMidi}
-          className="px-2 py-0.5 text-[10px] font-mono font-bold bg-neutral-800 text-neutral-300 hover:bg-neutral-700 border border-neutral-700 rounded transition"
+          className="px-2 py-0.5 text-[10px] font-mono font-bold bg-[#d97706]/20 text-amber-400 hover:bg-[#d97706]/35 border border-amber-600/40 rounded transition"
           title="Halve MIDI sequence length (0.5x)"
         >
           0.5x Halve

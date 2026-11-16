@@ -82,6 +82,8 @@ import {
   GripVertical,
   Star,
   SlidersHorizontal,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 
 interface HistorySnapshot {
@@ -301,6 +303,17 @@ export const PluginSimulator: React.FC = () => {
   const [generatorBars, setGeneratorBars] = useState<2 | 4 | 8>(4);
   const [dawHostBpm, setDawHostBpm] = useState<number | null>(null);
   const [dawHostTimeSig, setDawHostTimeSig] = useState<{ num: number; den: number } | null>(null);
+  const [isJuceStandalone, setIsJuceStandalone] = useState(false);
+  const isJuceStandaloneRef = useRef(false);
+  const [standaloneSynthEnabled, setStandaloneSynthEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('midilens_standalone_synth_v1');
+      if (saved === 'false') return false;
+    } catch {
+      // ignore storage errors
+    }
+    return true;
+  });
   const genCounterRef = useRef(0);
   const wasMidiDraggedRef = useRef(false);
 
@@ -516,21 +529,58 @@ export const PluginSimulator: React.FC = () => {
     });
   }, []);
 
+  useEffect(() => {
+    isJuceStandaloneRef.current = isJuceStandalone;
+    synthAudioEngine.setStandaloneMode(isJuceStandalone);
+  }, [isJuceStandalone]);
+
+  useEffect(() => {
+    synthAudioEngine.setStandaloneMuted(!standaloneSynthEnabled);
+    try {
+      localStorage.setItem('midilens_standalone_synth_v1', standaloneSynthEnabled ? 'true' : 'false');
+    } catch {
+      // ignore storage errors
+    }
+  }, [standaloneSynthEnabled]);
+
   // Native JUCE 8 WebView Event Listeners (DAW Telemetry, Finder Folder Scan, File Load & State Recall)
   useEffect(() => {
     if (!isJuceNative()) return;
 
     const unwrapJucePayload = (raw: any) => (Array.isArray(raw) && raw.length === 1 ? raw[0] : raw);
 
+    const unsubHostEnv = onJuceEvent('hostEnvironment', (rawPayload: any) => {
+      const payload = unwrapJucePayload(rawPayload);
+      if (!payload) return;
+      const standalone = Boolean(payload.isStandalone);
+      isJuceStandaloneRef.current = standalone;
+      setIsJuceStandalone(standalone);
+      synthAudioEngine.setStandaloneMode(standalone);
+      if (standalone && !hasRestoredJuceStateRef.current) {
+        setParams((prev) => (prev.syncMode === 'daw' ? { ...prev, syncMode: 'audition' } : prev));
+      }
+    });
+
     const unsubTelemetry = onJuceEvent('dawTelemetry', (rawPayload: any) => {
       const payload = unwrapJucePayload(rawPayload);
       if (!payload) return;
-      if (typeof payload.playheadPpq === 'number') {
-        setPlayheadPpq(payload.playheadPpq);
+      const standalone =
+        typeof payload.isStandalone === 'boolean' ? payload.isStandalone : payload.isDawConnected === false;
+      if (standalone !== isJuceStandaloneRef.current) {
+        isJuceStandaloneRef.current = standalone;
+        setIsJuceStandalone(standalone);
+        synthAudioEngine.setStandaloneMode(standalone);
       }
-      if (typeof payload.isPlaying === 'boolean') {
-        setIsPlaying(payload.isPlaying);
+
+      if (!standalone) {
+        if (typeof payload.playheadPpq === 'number') {
+          setPlayheadPpq(payload.playheadPpq);
+        }
+        if (typeof payload.isPlaying === 'boolean') {
+          setIsPlaying(payload.isPlaying);
+        }
       }
+
       if (
         typeof payload.hostBpm === 'number' &&
         payload.hostBpm >= 20 &&
@@ -756,6 +806,7 @@ export const PluginSimulator: React.FC = () => {
     emitToJuce('frontendReady', {});
 
     return () => {
+      unsubHostEnv();
       unsubTelemetry();
       unsubLibrary();
       unsubLibraryChunk();
@@ -1988,8 +2039,7 @@ export const PluginSimulator: React.FC = () => {
           </svg>
 
           {/* Milled Aluminum Hardware Brandplate */}
-          <div className="flex items-center gap-2 px-3 py-1 bg-gradient-to-b from-[#2a2d33] to-[#1c1e22] border border-[#3d414a] rounded shadow-[0_1px_3px_rgba(0,0,0,0.8),inset_0_1px_0_rgba(255,255,255,0.15)]">
-            <img src="/icon.svg" alt="MidiLens Icon" className="w-3.5 h-3.5 rounded-full shadow" />
+          <div className="flex items-center px-3 py-1 bg-gradient-to-b from-[#2a2d33] to-[#1c1e22] border border-[#3d414a] rounded shadow-[0_1px_3px_rgba(0,0,0,0.8),inset_0_1px_0_rgba(255,255,255,0.15)]">
             <div className="flex flex-col">
               <span className="text-[11px] font-mono font-black tracking-[0.25em] text-white">
                 MIDILENS
@@ -2223,10 +2273,10 @@ export const PluginSimulator: React.FC = () => {
                 fileInputRef.current.click();
               }
             }}
-            className="hardware-button flex items-center gap-1.5 text-xs text-neutral-300 rounded px-2.5 py-1 font-mono uppercase tracking-wider transition whitespace-nowrap"
+            className="hardware-button flex items-center gap-1.5 text-xs text-amber-400 rounded px-2.5 py-1 font-mono uppercase tracking-wider transition whitespace-nowrap"
             title="Open MIDI (.mid) files from your computer"
           >
-            <Upload className="w-3.5 h-3.5 text-neutral-400" />
+            <Upload className="w-3.5 h-3.5 text-amber-500" />
             <span className="text-[10px]">Open File</span>
           </button>
           <input
@@ -2448,6 +2498,29 @@ export const PluginSimulator: React.FC = () => {
               <Radio className={`w-3 h-3 ${params.syncMode === 'daw' ? 'text-emerald-400 animate-pulse' : 'text-neutral-500'}`} />
               <span>SYNC PLAY</span>
             </button>
+
+            {isJuceStandalone && (
+              <button
+                onClick={() => setStandaloneSynthEnabled((prev) => !prev)}
+                className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono font-bold uppercase tracking-wider transition active:translate-y-0.5 ${
+                  standaloneSynthEnabled
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/70 shadow-[0_0_8px_rgba(16,185,129,0.35)]'
+                    : 'hardware-button text-neutral-400 hover:text-neutral-200'
+                }`}
+                title={
+                  standaloneSynthEnabled
+                    ? 'Built-in Standalone Audition Synth ON (click to mute when routing MIDI to external gear)'
+                    : 'Built-in Standalone Audition Synth MUTED (MIDI output only; click to unmute)'
+                }
+              >
+                {standaloneSynthEnabled ? (
+                  <Volume2 className="w-3 h-3 text-emerald-400" />
+                ) : (
+                  <VolumeX className="w-3 h-3 text-neutral-500" />
+                )}
+                <span>{standaloneSynthEnabled ? 'SYNTH ON' : 'SYNTH OFF'}</span>
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-0.5 bg-[#0c0e10] p-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
@@ -2812,16 +2885,16 @@ export const PluginSimulator: React.FC = () => {
                 onChange={(e) =>
                   setParams((p) => ({ ...p, quantizeStrength: Number(e.target.value) }))
                 }
-                className="w-16 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-amber-500"
+                className="w-16 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-sky-400"
                 title="Quantise pull strength (50% = loose tighten, 100% = hard snap)"
               />
-              <span className="text-amber-400 font-bold text-[10px] w-8 text-right">
+              <span className="text-sky-300 font-bold text-[10px] w-8 text-right">
                 {params.quantizeStrength ?? 100}%
               </span>
               <button
                 type="button"
                 onClick={applyTimingQuantize}
-                className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px] uppercase"
+                className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px] uppercase"
                 title={`Quantise to ${params.quantizeGrid} grid at ${params.quantizeStrength ?? 100}% strength`}
               >
                 Quantise
@@ -2870,7 +2943,7 @@ export const PluginSimulator: React.FC = () => {
               <button
                 type="button"
                 onClick={applyLegato}
-                className="hardware-button px-2 py-0.5 text-emerald-300 font-bold rounded text-[9.5px] uppercase"
+                className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px] uppercase"
                 title="Extend or trim notes cleanly to touch next onset (removes gaps and overlaps)"
               >
                 Legato / Fix
@@ -2878,7 +2951,7 @@ export const PluginSimulator: React.FC = () => {
               <button
                 type="button"
                 onClick={applyStaccato}
-                className="hardware-button px-2 py-0.5 text-neutral-300 font-bold rounded text-[9.5px] uppercase"
+                className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px] uppercase"
                 title="Shorten note durations by 50%"
               >
                 Staccato 50%
@@ -2895,13 +2968,13 @@ export const PluginSimulator: React.FC = () => {
                 step={5}
                 value={strumMs}
                 onChange={(e) => setStrumMs(Number(e.target.value))}
-                className="w-14 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-emerald-400"
+                className="w-14 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-sky-400"
               />
-              <span className="text-emerald-300 font-bold text-[10px] w-8">{strumMs}ms</span>
+              <span className="text-sky-300 font-bold text-[10px] w-8">{strumMs}ms</span>
               <button
                 type="button"
                 onClick={() => applyStrum('up')}
-                className="hardware-button px-1.5 py-0.5 text-emerald-300 font-bold rounded text-[9.5px]"
+                className="hardware-button px-1.5 py-0.5 text-sky-300 font-bold rounded text-[9.5px]"
                 title="Strum chords low-to-high (Up-Strum)"
               >
                 ↑
@@ -2909,7 +2982,7 @@ export const PluginSimulator: React.FC = () => {
               <button
                 type="button"
                 onClick={() => applyStrum('down')}
-                className="hardware-button px-1.5 py-0.5 text-emerald-300 font-bold rounded text-[9.5px]"
+                className="hardware-button px-1.5 py-0.5 text-sky-300 font-bold rounded text-[9.5px]"
                 title="Strum chords high-to-low (Down-Strum)"
               >
                 ↓
@@ -2917,12 +2990,12 @@ export const PluginSimulator: React.FC = () => {
             </div>
 
             {/* Destructive Half/Double Speed Resize */}
-            <div className="flex items-center gap-1 bg-[#0c0e10] px-2 py-1 rounded border border-amber-700/50 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
-              <span className="text-amber-400/90 text-[9.5px] font-bold">GRID RESIZE:</span>
+            <div className="flex items-center gap-1 bg-[#0c0e10] px-2 py-1 rounded border border-sky-700/50 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+              <span className="text-sky-400/90 text-[9.5px] font-bold">GRID RESIZE:</span>
               <button
                 type="button"
                 onClick={() => applyDestructiveSpeed(0.5)}
-                className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px]"
+                className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px]"
                 title="Destructively compress notes 0.5× (Double-Time) so dragging to Logic Pro drops double-time notes onto the grid"
               >
                 0.5× (2× Spd)
@@ -2930,7 +3003,7 @@ export const PluginSimulator: React.FC = () => {
               <button
                 type="button"
                 onClick={() => applyDestructiveSpeed(2.0)}
-                className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px]"
+                className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px]"
                 title="Destructively stretch notes 2× (Half-Time) so dragging to Logic Pro drops half-time notes onto the grid"
               >
                 2× (0.5× Spd)
@@ -2946,7 +3019,7 @@ export const PluginSimulator: React.FC = () => {
               <button
                 type="button"
                 onClick={() => applyChordInvert('up')}
-                className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px]"
+                className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px]"
                 title="Invert chord(s) up (lowest voice +1 octave)"
               >
                 Inv ↑
@@ -2954,7 +3027,7 @@ export const PluginSimulator: React.FC = () => {
               <button
                 type="button"
                 onClick={() => applyChordInvert('down')}
-                className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px]"
+                className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px]"
                 title="Invert chord(s) down (highest voice -1 octave)"
               >
                 Inv ↓
@@ -2962,7 +3035,7 @@ export const PluginSimulator: React.FC = () => {
               <button
                 type="button"
                 onClick={applyDrop2}
-                className="hardware-button px-2 py-0.5 text-purple-300 font-bold rounded text-[9.5px]"
+                className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px]"
                 title="Drop-2 voicing (drops 2nd highest chord tone by 1 octave)"
               >
                 Drop-2
@@ -2970,7 +3043,7 @@ export const PluginSimulator: React.FC = () => {
               <button
                 type="button"
                 onClick={applyOpenVoice}
-                className="hardware-button px-2 py-0.5 text-purple-300 font-bold rounded text-[9.5px]"
+                className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px]"
                 title="Toggle between Open (wide spread) and Close voicing"
               >
                 Open / Close
@@ -2999,7 +3072,7 @@ export const PluginSimulator: React.FC = () => {
               <button
                 type="button"
                 onClick={() => applyRotatePattern(-0.25)}
-                className="hardware-button px-2 py-0.5 text-neutral-200 font-bold rounded text-[9.5px]"
+                className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px]"
                 title="Rotate pattern left by 1/16 note"
               >
                 ◀ Shift 1/16
@@ -3007,7 +3080,7 @@ export const PluginSimulator: React.FC = () => {
               <button
                 type="button"
                 onClick={() => applyRotatePattern(0.25)}
-                className="hardware-button px-2 py-0.5 text-neutral-200 font-bold rounded text-[9.5px]"
+                className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px]"
                 title="Rotate pattern right by 1/16 note"
               >
                 Shift 1/16 ▶
@@ -3020,7 +3093,7 @@ export const PluginSimulator: React.FC = () => {
               <button
                 type="button"
                 onClick={() => applyExtractLayer('bass')}
-                className="hardware-button px-2 py-0.5 text-emerald-300 font-bold rounded text-[9.5px]"
+                className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px]"
                 title="Keep only the lowest note at each chord/step to isolate a Bass-Root layer"
               >
                 Bass-Root Only
@@ -3028,7 +3101,7 @@ export const PluginSimulator: React.FC = () => {
               <button
                 type="button"
                 onClick={() => applyExtractLayer('topline')}
-                className="hardware-button px-2 py-0.5 text-amber-300 font-bold rounded text-[9.5px]"
+                className="hardware-button px-2 py-0.5 text-sky-300 font-bold rounded text-[9.5px]"
                 title="Keep only the highest note at each chord/step to isolate a Topline melody"
               >
                 Topline Only
@@ -3080,7 +3153,7 @@ export const PluginSimulator: React.FC = () => {
                     onClick={() => setGeneratorBars(b)}
                     className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition ${
                       generatorBars === b
-                        ? 'bg-amber-500 text-black font-extrabold'
+                        ? 'bg-emerald-500 text-black font-extrabold shadow-[0_0_8px_rgba(16,185,129,0.5)]'
                         : 'text-neutral-400 hover:text-white'
                     }`}
                   >
@@ -3159,18 +3232,18 @@ export const PluginSimulator: React.FC = () => {
 
               <div className="flex items-center gap-2 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
                 <span className="text-neutral-400">Vel Jitter:</span>
-                <span className="text-amber-400 font-bold min-w-[28px]">&plusmn;{humanizeVelRange}</span>
+                <span className="text-purple-300 font-bold min-w-[28px]">&plusmn;{humanizeVelRange}</span>
                 <input
                   type="range"
                   min={1}
                   max={40}
                   value={humanizeVelRange}
                   onChange={(e) => setHumanizeVelRange(Number(e.target.value))}
-                  className="w-24 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-amber-500 shrink-0"
+                  className="w-24 h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-purple-500 shrink-0"
                 />
                 <button
                   onClick={applyHumanizeVelocity}
-                  className="px-2.5 py-1 bg-gradient-to-b from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-extrabold rounded transition uppercase text-[10px] shadow border border-amber-300/50"
+                  className="px-2.5 py-1 bg-gradient-to-b from-purple-500 to-purple-700 hover:from-purple-400 hover:to-purple-600 text-white font-extrabold rounded transition uppercase text-[10px] shadow border border-purple-300/50"
                   title="Apply random ±Jitter velocity humanisation"
                 >
                   Humanise Vel
@@ -3206,7 +3279,7 @@ export const PluginSimulator: React.FC = () => {
 
               <button
                 onClick={applyHumanizeTiming}
-                className="hardware-button px-2.5 py-1 text-emerald-300 font-bold rounded transition uppercase text-[10px]"
+                className="hardware-button px-2.5 py-1 text-purple-300 font-bold rounded transition uppercase text-[10px]"
                 title="Apply subtle ±12ms micro-timing drift"
               >
                 Humanise Timing
@@ -3268,16 +3341,17 @@ export const PluginSimulator: React.FC = () => {
       </div>
 
       {/* 2. Velocity Heatmap, Transpose, Diatonic Harmonise & Speed Controls Strip - Below Piano Roll */}
-      <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 px-4 py-2 bg-[#16181b] border-t border-b border-black/80 shadow-[0_2px_6px_rgba(0,0,0,0.7)] text-xs font-mono overflow-x-auto no-scrollbar">
-        {/* Left: Bottom-Left Rack Screw + Recessed Velocity Heatmap Well */}
-        <div className="flex items-center gap-2.5 shrink-0">
-          {/* Bottom-Left Flush Allen Rack Screw */}
-          <svg className="w-3.5 h-3.5 text-neutral-600 opacity-60 shrink-0" viewBox="0 0 24 24" fill="currentColor">
-            <circle cx="12" cy="12" r="10" stroke="#333" strokeWidth="1.5" fill="#18191c"/>
-            <polygon points="12,7 16.33,9.5 16.33,14.5 12,17 7.67,14.5 7.67,9.5" fill="#0d0e10" stroke="#2a2c30" strokeWidth="1"/>
-          </svg>
+      <div className="shrink-0 flex items-center justify-between gap-3 px-4 py-2 bg-[#16181b] border-t border-b border-black/80 shadow-[0_2px_6px_rgba(0,0,0,0.7)] text-xs font-mono">
+        {/* Bottom-Left Flush Allen Rack Screw */}
+        <svg className="w-3.5 h-3.5 text-neutral-600 opacity-60 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+          <circle cx="12" cy="12" r="10" stroke="#333" strokeWidth="1.5" fill="#18191c"/>
+          <polygon points="12,7 16.33,9.5 16.33,14.5 12,17 7.67,14.5 7.67,9.5" fill="#0d0e10" stroke="#2a2c30" strokeWidth="1"/>
+        </svg>
 
-          {/* Stamped Recessed Velocity Well */}
+        <div className="flex-1 min-w-0 flex flex-wrap items-center justify-between gap-3">
+          {/* Left: Recessed Velocity Heatmap Well + Select All */}
+          <div className="flex items-center gap-2.5 shrink-0">
+            {/* Stamped Recessed Velocity Well */}
           <div className="flex items-center gap-2 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
             <span className="silkscreen-label text-neutral-500">VELOCITY:</span>
 
@@ -3418,28 +3492,28 @@ export const PluginSimulator: React.FC = () => {
               </button>
               <button
                 onClick={() => applyHarmonize('+5th')}
-                className="hardware-button px-1.5 py-0.5 text-[9.5px] font-mono font-bold text-emerald-300 rounded transition"
+                className="hardware-button px-1.5 py-0.5 text-[9.5px] font-mono font-bold text-amber-300 rounded transition"
                 title="Add diatonic +5th harmony voice (above)"
               >
                 +5th
               </button>
               <button
                 onClick={() => applyHarmonize('-5th')}
-                className="hardware-button px-1.5 py-0.5 text-[9.5px] font-mono font-bold text-emerald-300 rounded transition"
+                className="hardware-button px-1.5 py-0.5 text-[9.5px] font-mono font-bold text-amber-300 rounded transition"
                 title="Add diatonic -5th harmony voice (below)"
               >
                 -5th
               </button>
               <button
                 onClick={() => applyHarmonize('+12')}
-                className="hardware-button px-1.5 py-0.5 text-[9.5px] font-mono font-bold text-amber-400 rounded transition"
+                className="hardware-button px-1.5 py-0.5 text-[9.5px] font-mono font-bold text-amber-300 rounded transition"
                 title="Add +12 semitones (+1 Octave) harmony voice"
               >
                 +12
               </button>
               <button
                 onClick={() => applyHarmonize('-12')}
-                className="hardware-button px-1.5 py-0.5 text-[9.5px] font-mono font-bold text-amber-400 rounded transition"
+                className="hardware-button px-1.5 py-0.5 text-[9.5px] font-mono font-bold text-amber-300 rounded transition"
                 title="Add -12 semitones (-1 Octave) bass harmony voice"
               >
                 -12
@@ -3467,25 +3541,26 @@ export const PluginSimulator: React.FC = () => {
             </div>
           </div>
 
-          {/* Stamped Socket: Sync Mode */}
-          <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
-            <Gauge className="w-3.5 h-3.5 text-neutral-400" />
-            <select
-              value={params.syncMode}
-              onChange={(e) => setParams((p) => ({ ...p, syncMode: e.target.value as 'daw' | 'audition' }))}
-              className="bg-transparent text-[10.5px] font-mono font-bold text-amber-400 focus:outline-none cursor-pointer uppercase"
-            >
-              <option value="daw" className="bg-[#121418]">Follow DAW</option>
-              <option value="audition" className="bg-[#121418]">Free Audition</option>
-            </select>
+            {/* Stamped Socket: Sync Mode */}
+            <div className="flex items-center gap-1.5 bg-[#0c0e10] px-2.5 py-1 rounded border border-neutral-700/80 shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]">
+              <Gauge className="w-3.5 h-3.5 text-neutral-400" />
+              <select
+                value={params.syncMode}
+                onChange={(e) => setParams((p) => ({ ...p, syncMode: e.target.value as 'daw' | 'audition' }))}
+                className="bg-transparent text-[10.5px] font-mono font-bold text-amber-400 focus:outline-none cursor-pointer uppercase"
+              >
+                <option value="daw" className="bg-[#121418]">Follow DAW</option>
+                <option value="audition" className="bg-[#121418]">Free Audition</option>
+              </select>
+            </div>
           </div>
-
-          {/* Bottom-Right Flush Allen Rack Screw */}
-          <svg className="w-3.5 h-3.5 text-neutral-600 opacity-60 shrink-0" viewBox="0 0 24 24" fill="currentColor">
-            <circle cx="12" cy="12" r="10" stroke="#333" strokeWidth="1.5" fill="#18191c"/>
-            <polygon points="12,7 16.33,9.5 16.33,14.5 12,17 7.67,14.5 7.67,9.5" fill="#0d0e10" stroke="#2a2c30" strokeWidth="1"/>
-          </svg>
         </div>
+
+        {/* Bottom-Right Flush Allen Rack Screw */}
+        <svg className="w-3.5 h-3.5 text-neutral-600 opacity-60 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+          <circle cx="12" cy="12" r="10" stroke="#333" strokeWidth="1.5" fill="#18191c"/>
+          <polygon points="12,7 16.33,9.5 16.33,14.5 12,17 7.67,14.5 7.67,9.5" fill="#0d0e10" stroke="#2a2c30" strokeWidth="1"/>
+        </svg>
       </div>
 
       {/* 3. Arpeggiator Control Module Rack Bay (Renders at full un-squashed size) */}

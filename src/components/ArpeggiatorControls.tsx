@@ -87,7 +87,7 @@ export const ArpeggiatorControls: React.FC<ArpeggiatorControlsProps> = ({
         {/* Module 2: Stepped Rate / Division Selector */}
         <div className="flex flex-col space-y-1.5 rack-recess p-2 rounded min-w-0">
           <span className="silkscreen-label flex items-center gap-1">
-            <Gauge className="w-2.5 h-2.5 text-emerald-400 shrink-0" /> RATE / CLOCK
+            <Gauge className="w-2.5 h-2.5 text-amber-500 shrink-0" /> RATE / CLOCK
           </span>
           <div className="grid grid-cols-3 gap-1">
             {ARP_RATES.map((r) => (
@@ -96,7 +96,7 @@ export const ArpeggiatorControls: React.FC<ArpeggiatorControlsProps> = ({
                 onClick={() => onParamsChange((p) => ({ ...p, arpRate: r }))}
                 className={`py-1 px-1 text-[9px] font-bold rounded uppercase tracking-wider transition text-center border whitespace-nowrap ${
                   params.arpRate === r
-                    ? 'bg-[#10b981] text-black border-emerald-300 shadow-[0_0_8px_rgba(16,185,129,0.5)] font-black'
+                    ? 'bg-[#d97706] text-black border-amber-400 shadow-[0_0_8px_rgba(217,119,6,0.5)] font-black'
                     : 'bg-[#181a1d] text-neutral-400 border-neutral-800 hover:text-white hover:bg-neutral-800'
                 }`}
               >
@@ -132,9 +132,9 @@ export const ArpeggiatorControls: React.FC<ArpeggiatorControlsProps> = ({
         <div className="flex flex-col justify-between space-y-1.5 rack-recess p-2 rounded min-w-[160px]">
           <div className="flex items-center justify-between silkscreen-label">
             <span className="flex items-center gap-1">
-              <Sparkles className="w-2.5 h-2.5 text-emerald-400 shrink-0" /> GATE DURATION
+              <Sparkles className="w-2.5 h-2.5 text-amber-500 shrink-0" /> GATE DURATION
             </span>
-            <span className="text-emerald-400 font-mono font-bold text-[10px]">{Math.round(params.arpGate * 100)}%</span>
+            <span className="text-amber-400 font-mono font-bold text-[10px]">{Math.round(params.arpGate * 100)}%</span>
           </div>
           <input
             type="range"
